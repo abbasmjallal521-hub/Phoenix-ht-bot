@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v10)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v11)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -452,7 +452,7 @@ def msg_menu(sub):
             f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n\n"
             f"💰 /price  ·  📊 /report  ·  🔎 /status  ·  ⏸ /stop\n{SIGN}")
 
-def menu_markup(sub):
+def menu_markup(sub, owner=False):
     rows = []
     syms = [x for x in AVAILABLE_SYMS if x in INSTRUMENTS]
     for i in range(0, len(syms), 2):
@@ -463,6 +463,15 @@ def menu_markup(sub):
         rows.append([{"text": ("✅ " if x in sub["tfs"] else "▫️ ") + x.upper(), "callback_data": "t:" + x} for x in tfs[i:i + 3]])
     rows.append([{"text": "✨ All instruments", "callback_data": "sa"}, {"text": "✨ All timeframes", "callback_data": "ta"}])
     rows.append([{"text": "🧹 Clear", "callback_data": "clr"}, {"text": "📊 Report", "callback_data": "rep"}])
+    if owner:
+        rows.append([{"text": "🎯 Calibrate prices · ظبّط الأسعار", "callback_data": "cal"}])
+    return {"inline_keyboard": rows}
+
+def calib_markup():
+    syms = [x for x in AVAILABLE_SYMS if x in INSTRUMENTS]
+    rows = [[{"text": ICON.get(x, "") + " " + INSTRUMENTS[x]["name"], "callback_data": "c:" + x} for x in syms[i:i + 2]]
+            for i in range(0, len(syms), 2)]
+    rows.append([{"text": "✖ Cancel", "callback_data": "cx"}])
     return {"inline_keyboard": rows}
 
 def msg_welcome(name):
@@ -1005,6 +1014,24 @@ class Engine:
         summ = summarize(self.ledger, sub["syms"], sub["tfs"], sub["lot"], time.time())
         self.tg.send(msg_report(sub, summ, title), chat=chat)
 
+    def is_owner(self, cid):
+        owner = str(ENV("ADMIN_ID", "") or self.meta.get("owner") or next(iter(self.subs), ""))
+        return str(cid) == owner
+
+    def do_calibrate(self, cid, sym, chart):
+        """Shift every price of `sym` so the feed matches the price the owner sees on his chart now."""
+        try:
+            feed = get_candles(sym, "1m", int(time.time()), raw=True)[-1].c
+        except Exception as e:
+            self.tg.send(f"Could not read the feed price now ({type(e).__name__}). Try again in a minute.", chat=cid)
+            return
+        if not use_offsets():
+            self.tg.send(f"ℹ️ The bot reads OANDA now, so <b>{sym}</b> needs no calibration (feed <code>{fmt(sym, feed)}</code>).", chat=cid)
+            return
+        self.set_offset(sym, round(chart - feed, 4), "manual")
+        self.tg.send(f"✅ <b>{sym}</b> calibrated · تم الضبط\nFeed <code>{fmt(sym, feed)}</code> → your chart <code>{fmt(sym, chart)}</code>"
+                     f" (offset {chart - feed:+.2f}).\nAll {sym} prices, waiting orders and open trades now match your chart.", chat=cid)
+
     def handle_update(self, u):
         if "callback_query" in u:
             return self._callback(u["callback_query"])
@@ -1015,6 +1042,13 @@ class Engine:
         cid = chat["id"]
         is_new = str(cid) not in self.subs
         sub = self.sub_of(cid, m.get("from", {}).get("first_name", ""))
+        waiting = sub.pop("await_cal", None)
+        if waiting and self.is_owner(cid):
+            try:
+                self.do_calibrate(cid, waiting, float(m["text"].strip().replace(",", "")))
+            except ValueError:
+                self.tg.send("That is not a price. Tap 🎯 Calibrate again and send a number like <code>4105.2</code>.", chat=cid)
+            return
         cmd, _, arg = m["text"].strip().partition(" ")
         cmd = cmd.split("@")[0].lower()
         if not self.meta.get("owner") and not ENV("ADMIN_ID", ""):
@@ -1023,33 +1057,22 @@ class Engine:
             if is_new or not sub.get("welcomed"):
                 self.tg.send(msg_welcome(sub.get("name", "")), chat=cid)
                 sub["welcomed"] = True
-            self.tg.send(msg_menu(sub), chat=cid, markup=menu_markup(sub))
+            self.tg.send(msg_menu(sub), chat=cid, markup=menu_markup(sub, self.is_owner(cid)))
         elif cmd == "/calibrate":
-            owner = str(ENV("ADMIN_ID", "") or self.meta.get("owner") or next(iter(self.subs), ""))
-            if str(cid) != owner:
+            if not self.is_owner(cid):
                 self.tg.send("Only the bot owner can calibrate prices.", chat=cid)
                 return
-            self.meta["owner"] = owner
             parts = arg.replace(",", "").split()
-            sym = parts[0].upper() if parts else ""
-            if sym in ("GOLD",): sym = "XAUUSD"
-            if sym in ("SILVER",): sym = "XAGUSD"
-            if sym in ("DOW", "WALLSTREET", "DJ30"): sym = "US30"
-            if sym in ("NASDAQ", "NAS", "USTEC", "NDX"): sym = "NAS100"
-            if sym in ("OIL", "WTI", "USOUSD"): sym = "USOIL"
+            alias = {"GOLD": "XAUUSD", "SILVER": "XAGUSD", "DOW": "US30", "WALLSTREET": "US30", "DJ30": "US30",
+                     "NASDAQ": "NAS100", "NAS": "NAS100", "USTEC": "NAS100", "NDX": "NAS100", "OIL": "USOIL", "WTI": "USOIL"}
+            sym = alias.get(parts[0].upper(), parts[0].upper()) if parts else ""
             try:
-                chart = float(parts[1])
                 if sym not in INSTRUMENTS:
                     raise ValueError
-                feed = get_candles(sym, "1m", int(time.time()), raw=True)[-1].c
-                self.set_offset(sym, round(chart - feed, 4), "manual")
-                self.tg.send(f"✅ <b>{sym}</b> calibrated. Feed <code>{fmt(sym, feed)}</code> → your chart <code>{fmt(sym, chart)}</code>"
-                             f" (offset {chart - feed:+.2f}). All {sym} prices now match your chart.", chat=cid)
+                self.do_calibrate(cid, sym, float(parts[1]))
             except (ValueError, IndexError):
-                self.tg.send("Write the price your chart shows now, like this:\n<code>/calibrate XAUUSD 4105.2</code>\n"
-                             "<code>/calibrate US30 52350</code>", chat=cid)
-            except Exception as e:
-                self.tg.send(f"Could not read the feed price now ({type(e).__name__}). Try again in a minute.", chat=cid)
+                self.tg.send("🎯 Choose the instrument, then send the price your chart shows now.\n"
+                             "اختار الأداة، وبعدين ابعت السعر يلي على شارتك هلق.", chat=cid, markup=calib_markup())
         elif cmd == "/price":
             snap = self.snap_fn(sub["syms"] or list(INSTRUMENTS)) if self.snap_fn else {}
             self.tg.send(msg_price(sub, snap), chat=cid)
@@ -1090,8 +1113,23 @@ class Engine:
             sub["syms"], sub["tfs"] = [], []
         elif data == "rep":
             self.send_report(cid, sub)
+        elif data in ("cal", "cx") or data.startswith("c:"):
+            self.tg.answer(cq["id"])
+            if not self.is_owner(cid):
+                return
+            if data == "cal":
+                self.tg.send("🎯 <b>Calibrate prices</b> · ظبّط الأسعار\nChoose the instrument · اختار الأداة", chat=cid, markup=calib_markup())
+            elif data == "cx":
+                sub.pop("await_cal", None)
+                self.tg.edit(cid, mid, "✖ Calibration cancelled.")
+            elif data[2:] in INSTRUMENTS:
+                sub["await_cal"] = data[2:]
+                self.tg.edit(cid, mid, f"{ICON.get(data[2:], '')} <b>{INSTRUMENTS[data[2:]]['name']}</b>\n"
+                                       f"Send the price your chart shows now (just the number).\n"
+                                       f"ابعت السعر يلي على شارتك هلق، رقم بس.")
+            return
         self.tg.answer(cq["id"])
-        self.tg.edit(cid, mid, msg_menu(sub), markup=menu_markup(sub))
+        self.tg.edit(cid, mid, msg_menu(sub), markup=menu_markup(sub, self.is_owner(cid)))
 
     def poll(self):
         if getattr(self.bc, "dry", False) or self.tg is None:
