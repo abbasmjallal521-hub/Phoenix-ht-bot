@@ -48,8 +48,8 @@ ENV = os.environ.get
 INSTRUMENTS = {
     "XAUUSD": {"name": "Gold",       "yahoo": "GC=F", "oanda": "XAU_USD",    "digits": 2, "tick": 0.01, "pip": 0.1, "contract": 100},
     "XAGUSD": {"name": "Silver",     "yahoo": "SI=F", "oanda": "XAG_USD",    "digits": 3, "tick": 0.001, "pip": 0.01, "contract": 5000},
-    "US30":   {"name": "Dow Jones",  "yahoo": "YM=F", "oanda": "US30_USD",   "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
-    "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "oanda": "NAS100_USD", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
+    "US30":   {"name": "Dow Jones",  "yahoo": "YM=F", "ref": "^DJI", "oanda": "US30_USD",   "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
+    "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "ref": "^NDX", "oanda": "NAS100_USD", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
     "USOIL":  {"name": "WTI Oil",    "yahoo": "CL=F", "oanda": "WTICO_USD",  "digits": 2, "tick": 0.01, "pip": 0.01, "contract": 1000},
 }
 for _s, _i in INSTRUMENTS.items():              # override a pip size with PIP_XAUUSD=0.1 etc.
@@ -681,8 +681,33 @@ def fetch_oanda(sym, tf, now):
         out.append(Bar(t, float(m["o"]), float(m["h"]), float(m["l"]), float(m["c"])))
     return out
 
-def get_candles(sym, tf, now):
-    return (fetch_oanda if ENV("DATA_PROVIDER", "yahoo").lower() == "oanda" else fetch_yahoo)(sym, tf, now)
+# ── price alignment ──
+# Yahoo gives FUTURES prices (YM=F, NQ=F, GC=F...). Brokers and TradingView "cash" charts trade a little
+# below or above them (the futures basis, e.g. about 250 points on the Dow). Every price the bot uses is
+# shifted by OFFSETS[sym] so entries, stops and targets match the chart. Indices calibrate themselves
+# against the cash index (^DJI, ^NDX) during US hours; any symbol can be calibrated by hand from Telegram
+# with /calibrate XAUUSD 4105.2 (the price your chart shows now), or with OFFSET_XAUUSD=-25 in the settings.
+OFFSETS = {s: float(ENV("OFFSET_" + s, "0") or 0) for s in INSTRUMENTS}
+
+def use_offsets():
+    return ENV("DATA_PROVIDER", "yahoo").lower() != "oanda"
+
+def get_candles(sym, tf, now, raw=False):
+    bars = (fetch_oanda if not use_offsets() else fetch_yahoo)(sym, tf, now)
+    off = 0.0 if raw or not use_offsets() else OFFSETS.get(sym, 0.0)
+    return [Bar(b.t, b.o + off, b.h + off, b.l + off, b.c + off) for b in bars] if off else bars
+
+def fetch_ref(sym, now):
+    """1-minute bars of the cash index the CFD follows (None when the symbol has no reference)."""
+    tick = INSTRUMENTS[sym].get("ref")
+    if not tick:
+        return None
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{tick}?interval=1m&range=1d"
+    r = requests.get(url, headers=UA, timeout=20); r.raise_for_status()
+    res = r.json()["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    return [Bar(t, o, h, l, c) for t, o, h, l, c in zip(res.get("timestamp", []), q["open"], q["high"], q["low"], q["close"])
+            if None not in (o, h, l, c) and t + 60 <= now]
 
 # ───────────────────────────── engine ─────────────────────────────
 class Engine:
@@ -703,6 +728,9 @@ class Engine:
                 d = json.load(open(STATE_FILE, encoding="utf-8"))
                 self.pairs, self.sent, QN = d.get("pairs", {}), d.get("sent", {}), d.get("q", 0)
                 self.subs, self.ledger, self.meta = d.get("subs", {}), d.get("ledger", []), d.get("meta", {})
+                for sym, x in self.meta.get("offsets", {}).items():
+                    if sym in OFFSETS and "v" in x:
+                        OFFSETS[sym] = x["v"]
                 for o in d.get("orders", []):
                     o.setdefault("inval", o.get("sl"))
                 self.orders = [o for o in d.get("orders", []) if "tps" in o and
@@ -717,6 +745,43 @@ class Engine:
         json.dump({"orders": self.orders[-400:], "pairs": self.pairs, "q": QN, "subs": self.subs, "ledger": self.ledger,
                    "meta": self.meta, "sent": dict(sorted(self.sent.items())[-3:])}, open(tmp, "w", encoding="utf-8"))
         os.replace(tmp, STATE_FILE)
+
+    def set_offset(self, sym, value, src):
+        """Store a new price offset and move the open and waiting orders of that symbol with it."""
+        old = OFFSETS.get(sym, 0.0)
+        delta = value - old
+        OFFSETS[sym] = value
+        self.meta.setdefault("offsets", {})[sym] = {"v": value, "src": src, "t": int(time.time())}
+        if abs(delta) > 0:
+            for o in self.orders:
+                if o["sym"] == sym and o["state"] in (PENDING, OPEN):
+                    for k in ("lo", "hi", "trig", "entry", "sl", "inval"):
+                        if k in o:
+                            o[k] += delta
+                    o["tps"] = [x + delta for x in o["tps"]]
+        log.info("offset %s = %+.3f (%s)", sym, value, src)
+
+    def auto_offsets(self, syms, now):
+        """Indices: offset = cash index - futures, measured on the same closed minute during US hours."""
+        if not use_offsets():
+            return
+        for sym in syms:
+            if not INSTRUMENTS[sym].get("ref"):
+                continue
+            last = self.meta.get("offsets", {}).get(sym, {})
+            if now - last.get("checked", 0) < 1800:
+                continue
+            self.meta.setdefault("offsets", {}).setdefault(sym, {})["checked"] = now
+            try:
+                ref = {b.t: b.c for b in (fetch_ref(sym, now) or [])}
+                fut = get_candles(sym, "1m", now, raw=True)
+                common = [b for b in fut[-60:] if b.t in ref]
+                if common:
+                    b = common[-1]
+                    self.set_offset(sym, round(ref[b.t] - b.c, 2), "auto")
+                    self.meta["offsets"][sym]["checked"] = now
+            except Exception as e:
+                log.warning("auto offset %s: %s", sym, e)
 
     def pair(self, sym, tf):
         return self.pairs.setdefault(f"{sym}|{tf}", {"last_t": 0, "day": "", "last_slot": -1, "seq": 0, "sent": 0})
@@ -900,11 +965,39 @@ class Engine:
         sub = self.sub_of(cid, m.get("from", {}).get("first_name", ""))
         cmd, _, arg = m["text"].strip().partition(" ")
         cmd = cmd.split("@")[0].lower()
+        if not self.meta.get("owner") and not ENV("ADMIN_ID", ""):
+            self.meta["owner"] = next(iter(self.subs), str(cid))
         if cmd in ("/start", "/menu", "/settings"):
             if is_new or not sub.get("welcomed"):
                 self.tg.send(msg_welcome(sub.get("name", "")), chat=cid)
                 sub["welcomed"] = True
             self.tg.send(msg_menu(sub), chat=cid, markup=menu_markup(sub))
+        elif cmd == "/calibrate":
+            owner = str(ENV("ADMIN_ID", "") or self.meta.get("owner") or next(iter(self.subs), ""))
+            if str(cid) != owner:
+                self.tg.send("Only the bot owner can calibrate prices.", chat=cid)
+                return
+            self.meta["owner"] = owner
+            parts = arg.replace(",", "").split()
+            sym = parts[0].upper() if parts else ""
+            if sym in ("GOLD",): sym = "XAUUSD"
+            if sym in ("SILVER",): sym = "XAGUSD"
+            if sym in ("DOW", "WALLSTREET", "DJ30"): sym = "US30"
+            if sym in ("NASDAQ", "NAS", "USTEC", "NDX"): sym = "NAS100"
+            if sym in ("OIL", "WTI", "USOUSD"): sym = "USOIL"
+            try:
+                chart = float(parts[1])
+                if sym not in INSTRUMENTS:
+                    raise ValueError
+                feed = get_candles(sym, "1m", int(time.time()), raw=True)[-1].c
+                self.set_offset(sym, round(chart - feed, 4), "manual")
+                self.tg.send(f"✅ <b>{sym}</b> calibrated. Feed <code>{fmt(sym, feed)}</code> → your chart <code>{fmt(sym, chart)}</code>"
+                             f" (offset {chart - feed:+.2f}). All {sym} prices now match your chart.", chat=cid)
+            except (ValueError, IndexError):
+                self.tg.send("Write the price your chart shows now, like this:\n<code>/calibrate XAUUSD 4105.2</code>\n"
+                             "<code>/calibrate US30 52350</code>", chat=cid)
+            except Exception as e:
+                self.tg.send(f"Could not read the feed price now ({type(e).__name__}). Try again in a minute.", chat=cid)
         elif cmd == "/price":
             snap = self.snap_fn(sub["syms"] or list(INSTRUMENTS)) if self.snap_fn else {}
             self.tg.send(msg_price(sub, snap), chat=cid)
@@ -1064,6 +1157,7 @@ def run(symbols, tfs, tg, once=False, minutes=0):
         now = int(time.time())
         eng.poll()                                          # users choosing their signals
         eng.daily_messages(now)
+        eng.auto_offsets(sorted({x for x, _ in watch_pairs(eng, symbols, tfs)}), now)
         for sym, tf in watch_pairs(eng, symbols, tfs):
             key = f"{sym}|{tf}"
             if now < nxt.get(key, 0):
@@ -1252,4 +1346,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
