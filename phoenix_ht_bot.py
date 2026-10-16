@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v9)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v10)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -696,7 +696,7 @@ def fetch_oanda(sym, tf, now):
     gran = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D"}[tf]
     url = (f"{base}/v3/instruments/{INSTRUMENTS[sym]['oanda']}/candles?granularity={gran}&count=500&price=M"
            f"&dailyAlignment=17&alignmentTimezone=America%2FNew_York")
-    r = requests.get(url, headers={"Authorization": f"Bearer {ENV('OANDA_TOKEN', '')}"}, timeout=20)
+    r = requests.get(url, headers={"Authorization": f"Bearer {(ENV('OANDA_TOKEN', '') or '').strip()}"}, timeout=20)
     r.raise_for_status()
     out = []
     for c in r.json()["candles"]:
@@ -715,8 +715,13 @@ def fetch_oanda(sym, tf, now):
 # with /calibrate XAUUSD 4105.2 (the price your chart shows now), or with OFFSET_XAUUSD=-25 in the settings.
 OFFSETS = {s: float(ENV("OFFSET_" + s, "0") or 0) for s in INSTRUMENTS}
 
+def provider():
+    """OANDA when a token is set (same candles as the OANDA charts on TradingView, real time), else Yahoo."""
+    p = (ENV("DATA_PROVIDER", "") or "").strip().lower()
+    return p if p in ("oanda", "yahoo") else ("oanda" if (ENV("OANDA_TOKEN", "") or "").strip() else "yahoo")
+
 def use_offsets():
-    return ENV("DATA_PROVIDER", "yahoo").lower() != "oanda"
+    return provider() != "oanda"
 
 def get_candles(sym, tf, now, raw=False):
     bars = (fetch_oanda if not use_offsets() else fetch_yahoo)(sym, tf, now)
@@ -1192,7 +1197,7 @@ def watch_pairs(eng, symbols, tfs):
 
 def run(symbols, tfs, tg, once=False, minutes=0):
     eng, cache, nxt = Engine(tg), {}, {}
-    log.info("Phoenix HAZ bot running: %s | %s | provider=%s", ",".join(symbols), ",".join(tfs), ENV("DATA_PROVIDER", "yahoo"))
+    log.info("Phoenix HAZ bot running: %s | %s | provider=%s", ",".join(symbols), ",".join(tfs), provider())
     eng.snap_fn = lambda syms: snapshot(syms, int(time.time()), cache)
     if not tg.dry:
         tg.setup()
@@ -1393,3 +1398,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
