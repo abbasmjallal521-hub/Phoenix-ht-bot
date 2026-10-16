@@ -35,7 +35,12 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DATA_PROVIDER: yahoo
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}        # Capital.com: real-time prices (CAPITALCOM charts on TradingView)
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}  # your Capital.com login e-mail
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}      # the custom password you gave the API key
+          CAPITAL_ENV: demo
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}          # set this secret and the bot reads OANDA (same candles as OANDA charts)
+          OANDA_ENV: practice
           SYMBOLS: "XAUUSD,XAGUSD,US30,NAS100,USOIL"
           TIMEFRAMES: "1m,5m,15m,30m,1h"
         run: python phoenix_ht_bot.py ${{ inputs.dry_run == true && '--once --dry-run' || '--minutes 340' }}
