@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot
+PHOENIX HAZ SMC — Telegram Signal Bot  (v9)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -90,6 +90,10 @@ MAX_HOLD_HOURS = float(ENV("MAX_HOLD_HOURS", "24"))   # the last target must be 
 
 # quality rules (fewer stop-outs)
 BE_AT_R = float(ENV("BE_AT_R", "0.7"))               # move the stop to entry after this share of the way to target 1 (0 = off)
+LOCK_AT = float(ENV("LOCK_AT", "0.8"))               # then, at this share of the way, move the stop into profit (0 = off)
+LOCK_USD = float(ENV("LOCK_USD", "5"))               # profit locked at that point, in $ at LOCK_LOT
+LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))
+LOCK_MAX = float(ENV("LOCK_MAX", "0.5"))             # never lock more than this share of the target (keeps the stop below price)
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
 NEUTRAL_FADE = ENV("NEUTRAL_FADE", "1") == "1"       # mixed trend: only reversal (limit) orders, no breakouts
@@ -117,8 +121,9 @@ SEND_UPDATES = ENV("SEND_UPDATES", "1") == "1"
 MAX_PER_PAIR_DAY = int(ENV("MAX_PER_PAIR_DAY", "6"))        # new signals per symbol+timeframe per day
 MAX_SIGNALS_PER_DAY = int(ENV("MAX_SIGNALS_PER_DAY", "100"))  # new signals per day, all symbols together
 
-PENDING, OPEN, TP_HIT, SL_HIT, DAY_END, BE_HIT, CANCELLED = 0, 1, 2, 3, 4, 5, 9
+PENDING, OPEN, TP_HIT, SL_HIT, DAY_END, BE_HIT, LOCK_HIT, CANCELLED = 0, 1, 2, 3, 4, 5, 6, 9
 STICKY_MAX_ATR = float(ENV("STICKY_MAX_ATR", "8"))      # an unfilled order stays while price is within this many ATR of it
+CONFLICT_ATR = float(ENV("CONFLICT_ATR", "1.5"))        # a buy and a sell closer than this (ATR) are never waiting together
 AVAILABLE_SYMS, AVAILABLE_TFS = list(INSTRUMENTS), list(TF_SEC)
 Bar = namedtuple("Bar", "t o h l c")
 log = logging.getLogger("phoenix")
@@ -243,6 +248,8 @@ def realized(o, exit_px=None):
     rest = 1.0 - w * o.get("hits", 0)
     if o["state"] == SL_HIT:
         return banked - rest * o["risk"]
+    if o["state"] == LOCK_HIT:
+        return banked + rest * o.get("lock_d", 0.0)
     if o["state"] == DAY_END and exit_px is not None:
         return banked + rest * (exit_px - o["trig"]) * o["dir"]
     return banked
@@ -413,6 +420,25 @@ def msg_protect(o, share):
             f"انقل الستوب على سعر الدخول\n{html.escape(short(o))}\n\n"
             f"Move your stop to entry: from here the trade can not turn into a loss." + footer())
 
+def lock_dist(o):
+    """Price distance that locks LOCK_USD at LOCK_LOT, capped at LOCK_MAX of the target."""
+    tgt = abs(o["tps"][0] - o["trig"])
+    usd = LOCK_USD / max(INSTRUMENTS[o["sym"]]["contract"] * LOCK_LOT, 1e-9)
+    return min(usd, LOCK_MAX * tgt)
+
+def msg_lock(o, share):
+    sym = o["sym"]; d = o["lock_d"]
+    usd = d * INSTRUMENTS[sym]["contract"] * LOCK_LOT
+    return (f"🔒 <b>LOCK PROFIT</b> · price is <b>{share}%</b> of the way to the target\n"
+            f"انقل الستوب لـ <code>{fmt(sym, o['lock_px'])}</code> وقفّل ربح\n{html.escape(short(o))}\n\n"
+            f"Move your stop to <code>{fmt(sym, o['lock_px'])}</code>: +{pips(sym, d)} pips locked (≈ ${usd:,.2f} at lot {LOCK_LOT:g})." + footer())
+
+def msg_locked(o):
+    sym = o["sym"]; d = o.get("lock_d", 0.0)
+    best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
+    return (f"🔒 <b>PROFIT LOCKED EXIT</b> · +{pips(sym, d)} pips ✅\nطلعت بربح مقفول\n{html.escape(short(o))}\n\n"
+            f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + footer())
+
 def sel_text(sub):
     s = ", ".join(INSTRUMENTS[x]["name"] for x in sub["syms"]) or "—"
     t = ", ".join(x.upper() for x in sub["tfs"]) or "—"
@@ -482,7 +508,7 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price, protect at 70%.\n\n"
+            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 70%, lock profit at 80%.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def msg_close(sub, summ, n_signals, weekly, lines_i):
@@ -755,7 +781,7 @@ class Engine:
         if abs(delta) > 0:
             for o in self.orders:
                 if o["sym"] == sym and o["state"] in (PENDING, OPEN):
-                    for k in ("lo", "hi", "trig", "entry", "sl", "inval"):
+                    for k in ("lo", "hi", "trig", "entry", "sl", "inval", "lock_px"):
                         if k in o:
                             o[k] += delta
                     o["tps"] = [x + delta for x in o["tps"]]
@@ -851,19 +877,25 @@ class Engine:
                 trig = o["trig"]
                 fav = (bar.h - trig) if d == 1 else (trig - bar.l)
                 adv = (trig - bar.l) if d == 1 else (bar.h - trig)
-                stop = trig if o["be"] else o["sl"]
+                stop = o["lock_px"] if o.get("locked") else trig if o["be"] else o["sl"]
                 if (d == 1 and bar.l <= stop) or (d == -1 and bar.h >= stop):
-                    o["state"] = BE_HIT if o["be"] else SL_HIT
-                    if not o["be"]:
+                    o["state"] = LOCK_HIT if o.get("locked") else BE_HIT if o["be"] else SL_HIT
+                    if o["state"] == SL_HIT:
                         ps.setdefault("cool", {})[str(d)] = bar.t + COOLDOWN_MIN * 60
                     self.book(o, bar)
-                    self.say(o, msg_be(o) if o["be"] else msg_sl(o))
+                    self.say(o, msg_locked(o) if o["state"] == LOCK_HIT else msg_be(o) if o["be"] else msg_sl(o))
                 else:
                     o["fav"], o["adv"] = max(o["fav"], fav), max(o["adv"], adv)
                     self._hits(o, bar, d)
-                    if o["state"] == OPEN and not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * o["risk"]:
+                    if o["state"] == OPEN and not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * abs(o["tps"][0] - trig):
                         o["be"] = True                                # protect: stop moves to entry
                         self.say(o, msg_protect(o, pct(o["fav"], abs(o["tps"][0] - trig))))
+                    elif (o["state"] == OPEN and o["be"] and not o.get("locked") and LOCK_AT > 0
+                          and o["fav"] >= LOCK_AT * abs(o["tps"][0] - trig)):
+                        o["lock_d"] = lock_dist(o)                    # lock: stop moves into profit
+                        o["lock_px"] = trig + d * o["lock_d"]
+                        o["locked"] = True
+                        self.say(o, msg_lock(o, pct(o["fav"], abs(o["tps"][0] - trig))))
 
         # 2) housekeeping: nothing is closed at the end of the session; only very old orders are dropped
         for o in self.orders:
@@ -891,6 +923,10 @@ class Engine:
             if prune_now:
                 ps["last_slot"] = slot
             live = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)]
+            ema_dir, mom_dir = local_dirs(bars, atr)
+            for p in [o for o in live if o["state"] == PENDING]:    # every bar: the chart now runs hard against it
+                if ema_dir == -p["dir"] and mom_dir == -p["dir"]:
+                    self.expire(p, "the market turned against it (falling for a buy, rising for a sell)")
             if prune_now:                                           # re-check unfilled orders only
                 for p in [o for o in live if o["state"] == PENDING]:
                     d = p["dir"]
@@ -906,14 +942,21 @@ class Engine:
             win = bars[-RANGE_BARS:]
             hi, lo = max(b.h for b in win), min(b.l for b in win)
             if hi - lo >= atr and self.bc.targets(sym, tf):
-                ema_dir, mom_dir = local_dirs(bars, atr)
                 fake_up, fake_dn = sweep_flags(bars)
                 built = build_orders(atr, hi, lo, bar.c, bias_info["now"], tick, RR[tf], ema_dir, mom_dir, fake_up, fake_dn)
+                lean = mom_dir or ema_dir or bias_info["now"]
+                keep = []
+                for n in built:                                     # a buy and a sell in the SAME area: keep only one
+                    rival = [m for m in built if m["dir"] == -n["dir"] and abs(m["trig"] - n["trig"]) <= CONFLICT_ATR * atr]
+                    if rival and not (n["dir"] == lean or (lean == 0 and not n["is_stop"])):
+                        continue
+                    keep.append(n)
+                built = keep
                 self.stats["built"] += len(built)
                 add = []
                 for n in built:
-                    if n["kind"] in have or n["dir"] in open_dirs:
-                        continue                                    # already waiting, or a trade this way is open
+                    if n["kind"] in have or n["dir"] in open_dirs or -n["dir"] in open_dirs:
+                        continue                                    # already waiting, or a trade is open (never both directions)
                     if n["rrs"][0] < MIN_RR:
                         self.stats["rr_skip"] += 1
                     elif ps.get("cool", {}).get(str(n["dir"]), 0) > bar.t:
@@ -938,6 +981,10 @@ class Engine:
                         if not msgs:                                  # Telegram refused: forget it and retry on the next bar
                             continue
                         n["msgs"] = msgs
+                        for q in self.orders:                       # the new order replaces an opposite one waiting in the same area
+                            if (q["sym"] == sym and q["tf"] == tf and q["state"] == PENDING and q["dir"] == -n["dir"]
+                                    and abs(q["trig"] - n["trig"]) <= CONFLICT_ATR * atr):
+                                self.expire(q, f"replaced by a {n['kind']}: the market changed direction")
                         ps["sent"] = ps.get("sent", 0) + 1
                         self.sent[day] = self.sent.get(day, 0) + 1
                         self.orders.append(n)
@@ -1215,7 +1262,7 @@ def selftest():
         eng.process_bar("XAUUSD", "5m", bars[max(0, i - 300):i + 1], info, is_latest=True)
     kinds = {}
     for k, t in fb.log:
-        key = k + ":" + next((w for w in ("New signal", "FILLED", "TARGET", "STOP LOSS HIT", "PROTECT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
+        key = k + ":" + next((w for w in ("New signal", "FILLED", "TARGET", "STOP LOSS HIT", "LOCK", "PROTECT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
         kinds[key] = kinds.get(key, 0) + 1
     print("messages by type:", json.dumps(kinds, indent=1))
     print("ledger entries:", len(eng.ledger))
@@ -1276,7 +1323,7 @@ def simulate():
                     if "TARGET" in t and "HIT" in t: cnt["tp"] += 1
                     if "STOP LOSS HIT" in t: cnt["sl"] += 1
                     if "STOPPED AT ENTRY" in t: cnt["be"] += 1
-                key = k + "|" + next((w for w in ("New signal", "FILLED", "TARGET HIT", "STOP LOSS HIT", "STOPPED AT ENTRY", "PROTECTED EXIT", "PROTECT", "TIME LIMIT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
+                key = k + "|" + next((w for w in ("New signal", "FILLED", "TARGET HIT", "STOP LOSS HIT", "STOPPED AT ENTRY", "PROTECTED EXIT", "PROFIT LOCKED EXIT", "LOCK PROFIT", "PROTECT", "TIME LIMIT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
                 samples.setdefault(key, strip_tags(t))
             for w, n in eng.stats["why"].items():
                 why_all[w] = why_all.get(w, 0) + n
