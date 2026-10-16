@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v11)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v12)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -46,15 +46,17 @@ load_env()
 ENV = os.environ.get
 
 INSTRUMENTS = {
-    "XAUUSD": {"name": "Gold",       "yahoo": "GC=F", "oanda": "XAU_USD",    "digits": 2, "tick": 0.01, "pip": 0.1, "contract": 100},
-    "XAGUSD": {"name": "Silver",     "yahoo": "SI=F", "oanda": "XAG_USD",    "digits": 3, "tick": 0.001, "pip": 0.01, "contract": 5000},
-    "US30":   {"name": "Dow Jones",  "yahoo": "YM=F", "ref": "^DJI", "oanda": "US30_USD",   "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
-    "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "ref": "^NDX", "oanda": "NAS100_USD", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
-    "USOIL":  {"name": "WTI Oil",    "yahoo": "CL=F", "oanda": "WTICO_USD",  "digits": 2, "tick": 0.01, "pip": 0.01, "contract": 1000},
+    "XAUUSD": {"name": "Gold",       "yahoo": "GC=F", "oanda": "XAU_USD",    "capital": "GOLD",    "digits": 2, "tick": 0.01, "pip": 0.1, "contract": 100},
+    "XAGUSD": {"name": "Silver",     "yahoo": "SI=F", "oanda": "XAG_USD",    "capital": "SILVER",    "digits": 3, "tick": 0.001, "pip": 0.01, "contract": 5000},
+    "US30":   {"name": "Dow Jones",  "yahoo": "YM=F", "ref": "^DJI", "oanda": "US30_USD",   "capital": "US30",   "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
+    "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "ref": "^NDX", "oanda": "NAS100_USD", "capital": "US100", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
+    "USOIL":  {"name": "WTI Oil",    "yahoo": "CL=F", "oanda": "WTICO_USD",  "capital": "OIL_CRUDE",  "digits": 2, "tick": 0.01, "pip": 0.01, "contract": 1000},
 }
 for _s, _i in INSTRUMENTS.items():              # override a pip size with PIP_XAUUSD=0.1 etc.
     if ENV("PIP_" + _s):
         _i["pip"] = float(ENV("PIP_" + _s))
+    if ENV("EPIC_" + _s):                           # Capital.com market name, e.g. EPIC_USOIL=OIL_CRUDE
+        _i["capital"] = ENV("EPIC_" + _s).strip()
     if ENV("CONTRACT_" + _s):                       # units per 1 lot at your broker (money maths)
         _i["contract"] = float(ENV("CONTRACT_" + _s))
 TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}
@@ -716,6 +718,83 @@ def fetch_oanda(sym, tf, now):
         out.append(Bar(t, float(m["o"]), float(m["h"]), float(m["l"]), float(m["c"])))
     return out
 
+class CapitalFeed:
+    """Capital.com REST prices (real time, CFD/spot candles like the CAPITALCOM charts on TradingView).
+    Needs CAPITAL_API_KEY, CAPITAL_IDENTIFIER (login e-mail) and CAPITAL_PASSWORD (the API key's custom password)."""
+    HOSTS = {"demo": "https://demo-api-capital.backend-capital.com", "live": "https://api-capital.backend-capital.com"}
+    RES = {"1m": "MINUTE", "5m": "MINUTE_5", "15m": "MINUTE_15", "30m": "MINUTE_30", "1h": "HOUR", "4h": "HOUR_4", "1d": "DAY"}
+
+    def __init__(self):
+        self.hdr, self.base, self.used, self.last_call = None, None, 0.0, 0.0
+        self.side = (ENV("CAPITAL_PRICE", "bid") or "bid").strip().lower()   # bid = what MetaTrader and TradingView draw
+
+    def _wait(self):                                         # Capital.com allows 10 requests a second: stay well below
+        gap = self.last_call + 0.15 - time.time()
+        if gap > 0:
+            time.sleep(gap)
+        self.last_call = time.time()
+
+    def login(self):
+        key = (ENV("CAPITAL_API_KEY", "") or "").strip()
+        body = {"identifier": (ENV("CAPITAL_IDENTIFIER", "") or "").strip(),
+                "password": (ENV("CAPITAL_PASSWORD", "") or "").strip(), "encryptedPassword": False}
+        first = (ENV("CAPITAL_ENV", "demo") or "demo").strip().lower()
+        for env in [first] + [e for e in self.HOSTS if e != first]:   # a key made on the other account type still works
+            self._wait()
+            time.sleep(1.0)                                  # session creation: max 1 per second
+            r = requests.post(self.HOSTS[env] + "/api/v1/session", json=body,
+                              headers={"X-CAP-API-KEY": key, "Content-Type": "application/json"}, timeout=20)
+            if r.ok and r.headers.get("CST"):
+                self.base, self.used = self.HOSTS[env], time.time()
+                self.hdr = {"CST": r.headers["CST"], "X-SECURITY-TOKEN": r.headers.get("X-SECURITY-TOKEN", "")}
+                log.info("Capital.com session OK (%s)", env)
+                return
+            log.warning("Capital.com login on %s refused (%s)", env, r.status_code)   # never log the key or password
+        raise RuntimeError("Capital.com login failed: check CAPITAL_API_KEY, CAPITAL_IDENTIFIER, CAPITAL_PASSWORD")
+
+    def get(self, path, params):
+        for attempt in range(2):
+            if self.hdr is None or time.time() - self.used > 540:      # sessions expire after 10 idle minutes
+                self.login()
+            self._wait()
+            r = requests.get(self.base + path, params=params, headers=self.hdr, timeout=20)
+            self.used = time.time()
+            if r.status_code in (401, 403) and attempt == 0:
+                self.hdr = None
+                continue
+            r.raise_for_status()
+            return r.json()
+
+    def candles(self, sym, tf, now):
+        epic = INSTRUMENTS[sym]["capital"]
+        data = self.get(f"/api/v1/prices/{epic}", {"resolution": self.RES[tf], "max": 1000})
+        side = self.side
+        def px(p):
+            if not p:
+                return None
+            b, a = p.get("bid"), p.get("ask")
+            if side == "mid" and b is not None and a is not None:
+                return (float(b) + float(a)) / 2
+            v = b if side == "bid" else a
+            v = v if v is not None else (a if b is None else b)
+            return None if v is None else float(v)
+        out = []
+        for c in data.get("prices", []):
+            ts = c.get("snapshotTimeUTC") or c.get("snapshotTime")
+            vals = [px(c.get(k)) for k in ("openPrice", "highPrice", "lowPrice", "closePrice")]
+            if not ts or None in vals:
+                continue
+            t = int(datetime.fromisoformat(ts[:19] + "+00:00").timestamp())
+            out.append(Bar(t, *vals))
+        out.sort(key=lambda b: b.t)
+        sec = 86400 if tf == "1d" else 14400 if tf == "4h" else TF_SEC[tf]
+        return completed(out, sec, now)                       # drop the candle that is still forming
+
+CAPITAL = CapitalFeed()
+
+def fetch_capital(sym, tf, now):
+    return CAPITAL.candles(sym, tf, now)
+
 # ── price alignment ──
 # Yahoo gives FUTURES prices (YM=F, NQ=F, GC=F...). Brokers and TradingView "cash" charts trade a little
 # below or above them (the futures basis, e.g. about 250 points on the Dow). Every price the bot uses is
@@ -725,15 +804,20 @@ def fetch_oanda(sym, tf, now):
 OFFSETS = {s: float(ENV("OFFSET_" + s, "0") or 0) for s in INSTRUMENTS}
 
 def provider():
-    """OANDA when a token is set (same candles as the OANDA charts on TradingView, real time), else Yahoo."""
+    """Capital.com when its key is set, else OANDA when its token is set (both real time), else Yahoo (delayed futures)."""
     p = (ENV("DATA_PROVIDER", "") or "").strip().lower()
-    return p if p in ("oanda", "yahoo") else ("oanda" if (ENV("OANDA_TOKEN", "") or "").strip() else "yahoo")
+    if p in ("capital", "oanda", "yahoo"):
+        return p
+    if (ENV("CAPITAL_API_KEY", "") or "").strip():
+        return "capital"
+    return "oanda" if (ENV("OANDA_TOKEN", "") or "").strip() else "yahoo"
 
 def use_offsets():
+    """Manual calibration (a few points to match your own broker) works on Yahoo and Capital.com."""
     return provider() != "oanda"
 
 def get_candles(sym, tf, now, raw=False):
-    bars = (fetch_oanda if not use_offsets() else fetch_yahoo)(sym, tf, now)
+    bars = {"capital": fetch_capital, "oanda": fetch_oanda, "yahoo": fetch_yahoo}[provider()](sym, tf, now)
     off = 0.0 if raw or not use_offsets() else OFFSETS.get(sym, 0.0)
     return [Bar(b.t, b.o + off, b.h + off, b.l + off, b.c + off) for b in bars] if off else bars
 
@@ -759,6 +843,7 @@ class Engine:
         self.snap_fn = None                      # set by run(): returns current prices for a list of symbols
         self.stats = {"built": 0, "rr_skip": 0, "dist_skip": 0, "unreal": 0, "capped": 0, "cool": 0, "spike": 0, "why": {}}
         self.load()
+        self.meta.setdefault("feed", provider())
 
     # ── state
     def load(self):
@@ -768,6 +853,10 @@ class Engine:
                 d = json.load(open(STATE_FILE, encoding="utf-8"))
                 self.pairs, self.sent, QN = d.get("pairs", {}), d.get("sent", {}), d.get("q", 0)
                 self.subs, self.ledger, self.meta = d.get("subs", {}), d.get("ledger", []), d.get("meta", {})
+                if self.meta.get("feed", "yahoo") != provider():   # new data source: old offsets do not apply
+                    log.info("data source changed %s -> %s: price offsets reset", self.meta.get("feed", "yahoo"), provider())
+                    self.meta["offsets"] = {}
+                self.meta["feed"] = provider()
                 for sym, x in self.meta.get("offsets", {}).items():
                     if sym in OFFSETS and "v" in x:
                         OFFSETS[sym] = x["v"]
@@ -802,8 +891,8 @@ class Engine:
         log.info("offset %s = %+.3f (%s)", sym, value, src)
 
     def auto_offsets(self, syms, now):
-        """Indices: offset = cash index - futures, measured on the same closed minute during US hours."""
-        if not use_offsets():
+        """Indices: offset = cash index - futures, measured on the same closed minute during US hours (Yahoo only)."""
+        if provider() != "yahoo":
             return
         for sym in syms:
             if not INSTRUMENTS[sym].get("ref"):
