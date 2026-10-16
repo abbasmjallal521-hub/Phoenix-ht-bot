@@ -18,6 +18,7 @@ Usage:
   python phoenix_ht_bot.py --selftest         # offline logic test with fake data
   python phoenix_ht_bot.py --simulate         # every symbol x every timeframe, fake prices
   python phoenix_ht_bot.py                    # run for real (needs .env)
+  python phoenix_ht_bot.py --minutes 340      # run 340 minutes, then save and exit (GitHub Actions)
 """
 import os, sys, json, time, html, random, argparse, logging
 from collections import namedtuple
@@ -95,7 +96,10 @@ NEUTRAL_FADE = ENV("NEUTRAL_FADE", "1") == "1"       # mixed trend: only reversa
 SWEEP_BUFFER = float(ENV("SWEEP_BUFFER_ATR", "0.25"))   # extra stop room (ATR) so a quick stop-hunt wick does not take the trade out
 FAKE_BREAK_BARS = int(ENV("FAKE_BREAK_BARS", "6"))      # a wick beyond the range that closes back inside within this many bars = fake breakout
 DAY_START_HOUR = int(ENV("DAY_START_HOUR", "18"))       # trading day starts (NY hour): totals reset at market open
-REPORT_HOUR = int(ENV("REPORT_HOUR", "17"))             # Friday report time (NY hour)
+REPORT_HOUR = int(ENV("REPORT_HOUR", "17"))             # market-close message time (NY hour, sent at :05). Friday = weekly
+MSG_TZ = ZoneInfo(ENV("MSG_TIMEZONE", "Asia/Beirut"))    # time zone of the morning message
+MORNING_HOUR = int(ENV("MORNING_HOUR", "9"))            # morning message hour (MSG_TIMEZONE), Monday to Friday
+DAILY_MSGS = ENV("DAILY_MSGS", "1") == "1"              # morning and market-close messages on/off
 LOT_DEFAULT = float(ENV("LOT_DEFAULT", "0.01"))         # lot size for the money numbers until a user sets /lot
 CHANNEL_FEED = ENV("CHANNEL_FEED", "1") == "1"          # also post every signal to the channel (TELEGRAM_CHAT_ID)
 PENDING_MAX_HOURS = float(ENV("PENDING_MAX_HOURS", "24"))  # an order never taken is dropped after this long
@@ -263,7 +267,10 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
 
 # ───────────────────────────── messages ─────────────────────────────
 LINE = "━━━━━━━━━━━━━━━━━━"
-SIGN = "— The Phoenix HAZ Syndicate"
+SIGN = "🔥 <b>The Phoenix HAZ Syndicate</b>"
+ICON = {"XAUUSD": "🥇", "XAGUSD": "🥈", "US30": "🏛", "NAS100": "💻", "USOIL": "🛢"}
+KIND_AR = {"BUY STOP": "شراء عند الاختراق", "SELL STOP": "بيع عند الكسر",
+           "BUY LIMIT": "شراء عند الارتداد", "SELL LIMIT": "بيع عند الارتداد"}
 
 QUOTES = [
     ("Discipline is the real edge.", "الانضباط هو الميزة الحقيقية."),
@@ -299,15 +306,31 @@ QUOTES = [
     ("Your edge is your routine.", "ميزتك في روتينك."),
     ("Today's discipline is tomorrow's confidence.", "انضباط اليوم هو ثقة الغد."),
 ]
+MORNING_LINES = [
+    ("A new day, a new chance. Trade it with a clear head.", "يوم جديد وفرصة جديدة، تداوله بعقل صافي."),
+    ("Coffee first, plan second, trades third.", "القهوة أولاً، الخطة ثانياً، والصفقات ثالثاً."),
+    ("Today we wait for our price, not for luck.", "اليوم ننتظر سعرنا، مش الحظ."),
+    ("Rise like the Phoenix: calm, focused, ready.", "انهض كالعنقاء: هادئ، مركّز، وجاهز."),
+    ("Small risk, steady hands, strong week.", "مخاطرة صغيرة، إيد ثابتة، وأسبوع قوي."),
+]
+CLOSE_LINES = [
+    ("The market is closed. Rest well, you earned it.", "السوق سكّر. ارتاح منيح، بتستاهل."),
+    ("Green or red, discipline was the win today.", "ربح أو خسارة، الانضباط هو المكسب اليوم."),
+    ("Review today, sleep well, come back sharper.", "راجع يومك، نام منيح، وارجع أقوى."),
+]
 QN = 0   # rotating counter, saved in the state file so phrases never repeat back to back
 
-def footer():
+def quote():
     global QN
-    en, ar = QUOTES[QN % len(QUOTES)]
+    q = QUOTES[QN % len(QUOTES)]
     QN += 1
-    return (f"\n<i>“{html.escape(en)}”</i>\n<i>{html.escape(ar)}</i>\n\n"
-            f"<i>Disclaimer: educational only, not financial advice. Trading is high risk; prices may differ from your broker.</i>\n"
-            f"<i>إخلاء مسؤولية: للتعليم فقط وليس نصيحة مالية. التداول عالي المخاطر وقد تختلف الأسعار عن وسيطك.</i>\n{SIGN}")
+    return q
+
+def footer():
+    en, ar = quote()
+    return (f"\n{LINE}\n🕊 <i>“{html.escape(en)}”</i>\n<i>{html.escape(ar)}</i>\n\n"
+            "⚠️ <i>Educational only · not financial advice · high risk · prices may differ from your broker.</i>\n"
+            "<i>للتعليم فقط · ليست نصيحة مالية · مخاطر عالية · قد تختلف الأسعار عن وسيطك.</i>\n" + SIGN)
 
 def fmt(sym, x):
     return f"{x:,.{INSTRUMENTS[sym]['digits']}f}"
@@ -316,70 +339,79 @@ def pips(sym, dist):
     return f"{abs(dist) / INSTRUMENTS[sym]['pip']:,.0f}"
 
 def title(o):
-    return f"<b>{o['sym']}</b> · {INSTRUMENTS[o['sym']]['name']} · <b>{o['tf'].upper()}</b>"
+    return f"{ICON.get(o['sym'], '•')} <b>{o['sym']}</b> {INSTRUMENTS[o['sym']]['name']}  ·  ⏱ <b>{o['tf'].upper()}</b>"
 
 def short(o):
-    return f"{o['sym']} {o['tf'].upper()} {o['kind']}  entry {fmt(o['sym'], o['trig'])}"
+    return f"{ICON.get(o['sym'], '•')} {o['sym']} · {o['tf'].upper()} · {o['kind']} @ {fmt(o['sym'], o['trig'])}"
 
 def rr_txt(o):
     return " / ".join(f"1:{r:g}" for r in o["rrs"])
 
-def msg_signal(o, bias_info):
+def msg_signal(o, bias_info, price=None):
     sym = o["sym"]
     d = "🟢" if o["dir"] == 1 else "🔴"
     if bias_info["now"] == 0:
-        trend = "mixed trend · momentum breakout" if o["is_stop"] else "mixed trend · reversal order"
+        trend = "⚡ Momentum breakout · mixed trend" if o["is_stop"] else "↩️ Reversal zone · mixed trend"
     else:
-        trend = "with trend" if o["with_trend"] else "AGAINST trend"
-    until = f"{PLAN_END // 60:02d}:{PLAN_END % 60:02d}"
-    rows = [f"{'Entry':<6}{fmt(sym, o['trig'])}",
-            f"{'Stop':<6}{fmt(sym, o['sl'])}  ({pips(sym, o['sl'] - o['trig'])} pips)"]
+        trend = "✨ With the trend" if o["with_trend"] else "⚠️ Against the trend"
+    rows = []
+    if price is not None:
+        away = o["trig"] - price
+        where = "above" if away > 0 else "below"
+        rows.append(f"💰 Price now     <code>{fmt(sym, price)}</code>")
+        rows.append(f"🎯 Entry          <code>{fmt(sym, o['trig'])}</code>  · {pips(sym, away)} pips {where}")
+    else:
+        rows.append(f"🎯 Entry          <code>{fmt(sym, o['trig'])}</code>")
+    rows.append(f"🛑 Stop loss     <code>{fmt(sym, o['sl'])}</code>  · −{pips(sym, o['sl'] - o['trig'])} pips")
     for i, (tp, r) in enumerate(zip(o["tps"], o["rrs"]), 1):
-        rows.append(f"{'TP' + str(i):<6}{fmt(sym, tp)}  (1:{r:g} · {pips(sym, tp - o['trig'])} pips)")
-    code = "\n".join(f"<code>{x}</code>" for x in rows)
-    return (
-        f"<b>PHOENIX HAZ SMC</b>  |  PENDING ORDER\n{LINE}\n"
-        f"{title(o)}\n{d} <b>{o['kind']}</b> · {trend}\n\n{code}\n"
-        f"<code>R:R   {rr_txt(o)}   ·   1 pip = {INSTRUMENTS[sym]['pip']:g}</code>\n\n"
-        f"Trend  <b>{bias_info['txt']}</b> · {bias_info['arrows']}\n"
-        f"Stays active until filled, or replaced by an updated plan\n{LINE}\n"
-        f"Tip: enter a touch early, close a touch before the target.\n" + footer())
+        name = "Take profit" if len(o["tps"]) == 1 else f"Target {i}"
+        rows.append(f"🏆 {name}  <code>{fmt(sym, tp)}</code>  · +{pips(sym, tp - o['trig'])} pips · 1:{r:g}")
+    return (f"🔥 <b>PHOENIX HAZ SMC</b>  ·  <i>New signal · إشارة جديدة</i>\n{LINE}\n"
+            f"{title(o)}\n{d} <b>{o['kind']}</b> — {KIND_AR.get(o['kind'], '')}\n{trend}\n\n"
+            + "\n".join(rows) +
+            f"\n\n📊 Trend <b>{bias_info['txt']}</b>\n      {bias_info['arrows']}\n"
+            f"⏳ Pending: waits for price to reach the entry · 1 pip = {INSTRUMENTS[sym]['pip']:g}\n"
+            f"💡 <i>Enter a touch early, close a touch before the target.</i>" + footer())
 
 def msg_expired(o, reason, not_triggered):
-    head = "🟣 <b>NOT TRIGGERED</b> ✖" if not_triggered else "⚪ <b>UPDATED</b>"
-    return f"{head} — {html.escape(reason)}\n<s>{html.escape(short(o))}</s>"
+    head = "🟣 <b>NOT TRIGGERED</b> ✖ · لم يتفعّل" if not_triggered else "⚪ <b>UPDATED</b>"
+    return f"{head}\n<i>{html.escape(reason)}</i>\n<s>{html.escape(short(o))}</s>"
 
 def msg_filled(o):
     sym = o["sym"]
-    return (f"<b>FILLED</b> — {html.escape(short(o))}\nTrade is active. Stop {fmt(sym, o['sl'])} · "
-            f"Target 1 {fmt(sym, o['tps'][0])}\nOther pending orders of this plan are cancelled.\n{LINE}" + footer())
+    return (f"⚡ <b>ORDER FILLED</b> · تم تفعيل الأمر\n{html.escape(short(o))}\n\n"
+            f"🛑 Stop  <code>{fmt(sym, o['sl'])}</code>\n🏆 Target  <code>{fmt(sym, o['tps'][0])}</code>\n\n"
+            f"The trade is live. Stick to the plan, no moving the stop back.\n"
+            f"الصفقة شغّالة. التزم بالخطة ولا ترجّع الستوب لورا." + footer())
 
 def msg_tp(o, i, final):
     sym, r = o["sym"], o["rrs"][i]
     gain = pips(sym, o["tps"][i] - o["trig"])
     near = pct(o["adv"], o["risk"])
-    extra = "" if final else f"\nMove your stop to entry to protect the trade. Next target {fmt(sym, o['tps'][i + 1])}."
-    return (f"✅ <b>TARGET {i + 1} HIT</b> · +{r:g}R (+{gain} pips)\n{html.escape(short(o))}{extra}\n"
-            f"Closest it came to your stop: <b>{near}%</b> of the way.\n{LINE}" + footer())
+    extra = "" if final else f"\nMove your stop to entry. Next target <code>{fmt(sym, o['tps'][i + 1])}</code>."
+    return (f"✅ <b>TARGET HIT</b> · +{r:g}R · +{gain} pips 🎉\nمبروك، ضرب الهدف\n{html.escape(short(o))}{extra}\n\n"
+            f"Closest it came to the stop: <b>{near}%</b> of the way." + footer())
 
 def msg_sl(o):
     sym = o["sym"]
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
-    return (f"❌ <b>STOP HIT</b> · −1R (−{pips(sym, o['sl'] - o['trig'])} pips)\n{html.escape(short(o))}\n"
-            f"Best it reached toward target 1: <b>{best}%</b> of the way.\n{LINE}" + footer())
+    return (f"❌ <b>STOP LOSS HIT</b> · −1R · −{pips(sym, o['sl'] - o['trig'])} pips\n"
+            f"ضرب وقف الخسارة. خسارة صغيرة ومحسوبة، ومنكمّل بانضباط.\n{html.escape(short(o))}\n\n"
+            f"Best it reached toward the target: <b>{best}%</b> of the way." + footer())
 
 def msg_be(o):
     if o.get("hits", 0) > 0:
         best = pct(o["fav"], abs(o["tps"][-1] - o["trig"]))
-        return (f"⚖ <b>STOPPED AT ENTRY</b> — target 1 was already reached ✅\n{html.escape(short(o))}\n"
-                f"The rest closed at entry. Best it reached toward the last target: <b>{best}%</b> of the way.\n{LINE}" + footer())
+        return (f"⚖️ <b>STOPPED AT ENTRY</b> · target 1 was already reached ✅\n{html.escape(short(o))}\n\n"
+                f"The rest closed at entry. Best toward the last target: <b>{best}%</b>." + footer())
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
-    return (f"🛡 <b>PROTECTED EXIT</b> · 0R\n{html.escape(short(o))}\n"
-            f"Price had reached <b>{best}%</b> of the way to target 1, so the stop was at entry.\n{LINE}" + footer())
+    return (f"🛡 <b>PROTECTED EXIT</b> · 0R · طلعت على الدخول بدون خسارة\n{html.escape(short(o))}\n\n"
+            f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + footer())
 
 def msg_protect(o, share):
-    return (f"🛡 <b>PROTECT</b> — price is <b>{share}%</b> of the way to target 1\n{html.escape(short(o))}\n"
-            f"Move your stop to entry.\n{LINE}" + footer())
+    return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
+            f"انقل الستوب على سعر الدخول\n{html.escape(short(o))}\n\n"
+            f"Move your stop to entry: from here the trade can not turn into a loss." + footer())
 
 def sel_text(sub):
     s = ", ".join(INSTRUMENTS[x]["name"] for x in sub["syms"]) or "—"
@@ -388,41 +420,107 @@ def sel_text(sub):
 
 def msg_menu(sub):
     s, t = sel_text(sub)
-    return (f"<b>PHOENIX HAZ SMC</b>  |  SIGNAL SETTINGS\n{LINE}\n"
-            "Choose what you want to receive. Tap a button to turn it on or off.\n"
-            "اختر الأدوات والفريمات التي تريد استقبالها، واضغط على الزر للتفعيل أو الإيقاف.\n\n"
-            f"Instruments: <b>{s}</b>\nTimeframes: <b>{t}</b>\nLot used for the money numbers: <b>{sub['lot']:g}</b>  (change it: /lot 0.1)\n\n"
-            f"/report  ·  /status  ·  /stop  ·  /help\n{SIGN}")
+    return (f"⚙️ <b>PHOENIX HAZ SMC</b>  ·  <i>Signal settings · الإعدادات</i>\n{LINE}\n"
+            "Tap to turn an instrument or timeframe on or off.\n"
+            "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
+            f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n\n"
+            f"💰 /price  ·  📊 /report  ·  🔎 /status  ·  ⏸ /stop\n{SIGN}")
 
 def menu_markup(sub):
     rows = []
     syms = [x for x in AVAILABLE_SYMS if x in INSTRUMENTS]
     for i in range(0, len(syms), 2):
-        rows.append([{"text": ("✅ " if x in sub["syms"] else "▫️ ") + INSTRUMENTS[x]["name"], "callback_data": "s:" + x} for x in syms[i:i + 2]])
+        rows.append([{"text": ("✅ " if x in sub["syms"] else "▫️ ") + ICON.get(x, "") + " " + INSTRUMENTS[x]["name"],
+                      "callback_data": "s:" + x} for x in syms[i:i + 2]])
     tfs = AVAILABLE_TFS
     for i in range(0, len(tfs), 3):
         rows.append([{"text": ("✅ " if x in sub["tfs"] else "▫️ ") + x.upper(), "callback_data": "t:" + x} for x in tfs[i:i + 3]])
-    rows.append([{"text": "All instruments", "callback_data": "sa"}, {"text": "All timeframes", "callback_data": "ta"}])
-    rows.append([{"text": "Clear", "callback_data": "clr"}, {"text": "📊 Report", "callback_data": "rep"}])
+    rows.append([{"text": "✨ All instruments", "callback_data": "sa"}, {"text": "✨ All timeframes", "callback_data": "ta"}])
+    rows.append([{"text": "🧹 Clear", "callback_data": "clr"}, {"text": "📊 Report", "callback_data": "rep"}])
     return {"inline_keyboard": rows}
+
+def msg_welcome(name):
+    who = html.escape(name) if name else "trader"
+    return (f"🔥 <b>Welcome to PHOENIX HAZ SMC</b>\nأهلاً وسهلاً فيك يا {who} 🤝\n{LINE}\n"
+            "Smart-money pending orders on Gold, Silver, Dow, Nasdaq and Oil: entry, stop and target, followed live until the end.\n"
+            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
+            "<b>What you get · شو بيوصلك</b>\n"
+            "🎯 Every order with the price now, entry, stop and target\n"
+            "⚡ Live updates: filled, protect, target, stop\n"
+            "☀️ A morning brief and 🌙 a market-close summary\n"
+            "📊 /report: today, week and month in pips and $\n\n"
+            "<b>How to start · كيف تبلّش</b>\n"
+            "1️⃣ Choose instruments and timeframes below · اختار الأدوات والفريمات تحت\n"
+            "2️⃣ Set your lot · حدّد اللوت: /lot 0.1\n"
+            "3️⃣ Wait for your price, risk 1–2% per trade · انتظر سعرك وخاطر 1–2% بالصفقة\n" + footer())
+
+def msg_price(sub, snap):
+    syms = sub["syms"] or list(INSTRUMENTS)
+    return (f"💰 <b>PHOENIX HAZ SMC</b>  ·  <i>Prices now · الأسعار هلق</i>\n{LINE}\n" + snapshot_rows(syms, snap) +
+            "\n\n<i>Prices from the data feed, they can differ a little from your broker.</i>\n" + SIGN)
+
+def snapshot_rows(syms, snap):
+    rows = []
+    for sym in syms:
+        x = snap.get(sym)
+        if not x:
+            continue
+        ch = f"{x['chg']:+.2f}%" if x.get("chg") is not None else ""
+        tr = {1: "▲ BULL", -1: "▼ BEAR"}.get(x.get("trend", 0), "• MIXED")
+        rows.append(f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name']}</b>  <code>{fmt(sym, x['price'])}</code>  {ch}  ·  {tr}")
+    return "\n".join(rows) or "—"
+
+def day_name(dt):
+    ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"][dt.weekday()]
+    return f"{dt.strftime('%A %d %B')} · {ar}"
+
+def msg_morning(sub, snap, dt, lines_i):
+    who = html.escape(sub.get("name") or "")
+    en, ar = MORNING_LINES[lines_i % len(MORNING_LINES)]
+    s, t = sel_text(sub)
+    syms = sub["syms"] or list(INSTRUMENTS)
+    return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
+            f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
+            f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
+            f"🛡 Risk 1–2% per trade, wait for your price, protect at 70%.\n\n"
+            f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
+
+def msg_close(sub, summ, n_signals, weekly, lines_i):
+    en, ar = CLOSE_LINES[lines_i % len(CLOSE_LINES)]
+    head = "🌙 <b>WEEK CLOSED</b> · سكّر السوق للأسبوع" if weekly else "🌙 <b>MARKET CLOSED</b> · سكّر السوق"
+    rows = []
+    for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month")):
+        o = summ[k]
+        rows.append(f"<code>{name:<6} {o['win']}W {o['loss']}L  {o['pips']:+,.0f} pips  {o['usd']:+,.2f}$</code>")
+    return (f"{head}\n{LINE}\n📨 Signals today: <b>{n_signals}</b>\n\n" + "\n".join(rows) +
+            f"\n\n<i>Lot {sub['lot']:g} · estimates from each plan's target and stop.</i>\n\n"
+            f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def msg_report(sub, summ, title="REPORT"):
     s, t = sel_text(sub)
     rows = []
     for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month")):
         o = summ[k]
-        rows.append(f"<code>{name:<6}{o['win']}W {o['loss']}L  {o['pips']:+,.0f} pips  {o['usd']:+,.2f}$</code>")
-    return (f"<b>PHOENIX HAZ SMC</b>  |  {title}\n{LINE}\nYour selection: <b>{s}</b> · <b>{t}</b>\n\n" + "\n".join(rows) +
-            f"\n\nLot {sub['lot']:g}. Estimates from each plan's target and stop, not your broker statement.\n"
-            f"التقديرات مبنية على هدف ووقف كل خطة وليست كشف حسابك لدى الوسيط.\n{LINE}" + footer())
+        rows.append(f"<code>{name:<6} {o['win']}W {o['loss']}L  {o['pips']:+,.0f} pips  {o['usd']:+,.2f}$</code>")
+    return (f"📊 <b>PHOENIX HAZ SMC</b>  ·  {title}\n{LINE}\n📈 <b>{s}</b> · ⏱ <b>{t}</b>\n\n" + "\n".join(rows) +
+            f"\n\n<i>Lot {sub['lot']:g}. Estimates from each plan's target and stop, not your broker statement.</i>\n"
+            f"<i>التقديرات مبنية على هدف ووقف كل خطة وليست كشف حسابك لدى الوسيط.</i>" + footer())
 
-HELP = ("<b>PHOENIX HAZ SMC</b>\n/start · choose instruments and timeframes\n/status · what you receive now\n"
-        "/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n/stop · stop all signals\n\n" + SIGN)
+HELP = (f"🔥 <b>PHOENIX HAZ SMC</b>\n{LINE}\n/start · choose instruments and timeframes\n/price · prices now\n"
+        "/status · what you receive\n/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n/stop · pause all signals\n\n" + SIGN)
 
 def msg_dayend(o, r, gain_pips):
     s = "+" if r >= 0 else "−"
-    return (f"⏹ <b>TIME LIMIT</b> · ≈ {s}{abs(r):.1f}R ({s}{gain_pips} pips)\n{html.escape(short(o))}\n"
-            f"This trade stayed open too long. Close it at market.\n{LINE}" + footer())
+    return (f"⏹ <b>TIME LIMIT</b> · ≈ {s}{abs(r):.1f}R ({s}{gain_pips} pips)\nالصفقة طوّلت كتير، سكّرها على السوق\n"
+            f"{html.escape(short(o))}" + footer())
+
+BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Prices now"), ("report", "Today, week, month"),
+                ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("stop", "Pause all signals"), ("help", "Help")]
+BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, Silver, Dow, Nasdaq and Oil: price now, entry, stop, "
+                   "target and live follow-up. Morning brief and market-close summary.\n"
+                   "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
+                   "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
+BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
 
 # ───────────────────────────── telegram ─────────────────────────────
 class Telegram:
@@ -476,6 +574,12 @@ class Telegram:
             log.error("TELEGRAM CHECK FAILED: the bot is admin but cannot post messages. Enable Post messages for it"); return False
         log.info("TELEGRAM CHECK OK: @%s can post to %s", me.get("username"), self.channel)
         return True
+
+    def setup(self):
+        """Command menu and the text people see before they press START."""
+        self._call("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in BOT_COMMANDS]})
+        self._call("setMyDescription", {"description": BOT_DESCRIPTION})
+        self._call("setMyShortDescription", {"short_description": BOT_SHORT})
 
     def send(self, text, chat=None, reply_to=None, markup=None):
         chat = chat if chat is not None else self.channel
@@ -587,6 +691,7 @@ class Engine:
         self.bc = bc or Broadcaster(tg, self)
         self.orders, self.pairs, self.sent = [], {}, {}
         self.subs, self.ledger, self.meta = {}, [], {}
+        self.snap_fn = None                      # set by run(): returns current prices for a list of symbols
         self.stats = {"built": 0, "rr_skip": 0, "dist_skip": 0, "unreal": 0, "capped": 0, "cool": 0, "spike": 0, "why": {}}
         self.load()
 
@@ -764,7 +869,7 @@ class Engine:
                             continue
                         n.update(sym=sym, tf=tf, plan=f"{sym}{tf}{ps['seq']}", state=PENDING, born_t=bar.t, fill_t=0,
                                  fav=0.0, adv=0.0, hits=0, be=False)
-                        msgs = self.bc.send_new(sym, tf, msg_signal(n, bias_info))
+                        msgs = self.bc.send_new(sym, tf, msg_signal(n, bias_info, bar.c))
                         if not msgs:                                  # Telegram refused: forget it and retry on the next bar
                             continue
                         n["msgs"] = msgs
@@ -791,11 +896,18 @@ class Engine:
         if chat.get("type") != "private" or "text" not in m:
             return
         cid = chat["id"]
+        is_new = str(cid) not in self.subs
         sub = self.sub_of(cid, m.get("from", {}).get("first_name", ""))
         cmd, _, arg = m["text"].strip().partition(" ")
         cmd = cmd.split("@")[0].lower()
         if cmd in ("/start", "/menu", "/settings"):
+            if is_new or not sub.get("welcomed"):
+                self.tg.send(msg_welcome(sub.get("name", "")), chat=cid)
+                sub["welcomed"] = True
             self.tg.send(msg_menu(sub), chat=cid, markup=menu_markup(sub))
+        elif cmd == "/price":
+            snap = self.snap_fn(sub["syms"] or list(INSTRUMENTS)) if self.snap_fn else {}
+            self.tg.send(msg_price(sub, snap), chat=cid)
         elif cmd == "/status":
             self.tg.send(msg_menu(sub), chat=cid)
         elif cmd == "/lot":
@@ -849,16 +961,39 @@ class Engine:
         if ups:
             self.save()
 
-    def friday_report(self, now):
-        dt = datetime.fromtimestamp(now, TZ)
-        if dt.weekday() == 4 and dt.hour * 60 + dt.minute >= REPORT_HOUR * 60 + 5:
-            key = "%d-%02d" % dt.isocalendar()[:2]
-            if self.meta.get("report_key") != key and self.tg is not None and not getattr(self.bc, "dry", False):
-                self.meta["report_key"] = key
-                for cid, sub in self.subs.items():
-                    if sub["syms"] and sub["tfs"]:
-                        self.send_report(cid, sub, "WEEKLY REPORT · التقرير الأسبوعي")
-                self.save()
+    def _broadcast_daily(self, build):
+        """Send a message to the channel (if any) and to every active subscriber."""
+        if self.tg is not None and self.tg.channel and CHANNEL_FEED:
+            chan = {"syms": list(AVAILABLE_SYMS), "tfs": list(AVAILABLE_TFS), "lot": LOT_DEFAULT, "name": ""}
+            self.tg.send(build(chan), chat=self.tg.channel)
+        for cid, sub in list(self.subs.items()):
+            if sub["syms"] and sub["tfs"]:
+                self.tg.send(build(sub), chat=cid)
+
+    def daily_messages(self, now):
+        """Morning brief (Mon-Fri, MORNING_HOUR local) and market-close summary (Mon-Fri, REPORT_HOUR:05 New York)."""
+        if not DAILY_MSGS or self.tg is None or getattr(self.bc, "dry", False):
+            return
+        loc = datetime.fromtimestamp(now, MSG_TZ)
+        m = loc.hour * 60 + loc.minute
+        key = loc.strftime("%Y-%m-%d")
+        if loc.weekday() < 5 and MORNING_HOUR * 60 <= m < MORNING_HOUR * 60 + 180 and self.meta.get("morning") != key:
+            self.meta["morning"] = key
+            syms = sorted({x for s in self.subs.values() for x in s["syms"]} | (set(AVAILABLE_SYMS) if self.tg.channel else set()))
+            snap = self.snap_fn(syms) if (self.snap_fn and syms) else {}
+            i = loc.toordinal()
+            self._broadcast_daily(lambda sub: msg_morning(sub, snap, loc, i))
+            self.save()
+        ny = datetime.fromtimestamp(now, TZ)
+        m = ny.hour * 60 + ny.minute
+        key = ny.strftime("%Y-%m-%d")
+        if ny.weekday() < 5 and REPORT_HOUR * 60 + 5 <= m < REPORT_HOUR * 60 + 180 and self.meta.get("close") != key:
+            self.meta["close"] = key
+            weekly, i = ny.weekday() == 4, ny.toordinal()
+            n_sig = self.sent.get(key, 0)
+            self._broadcast_daily(lambda sub: msg_close(sub, summarize(self.ledger, sub["syms"], sub["tfs"], sub["lot"], now),
+                                                        n_sig, weekly, i))
+            self.save()
 
 # ───────────────────────────── live loop ─────────────────────────────
 def bias_info_for(sym, now, cache):
@@ -891,6 +1026,22 @@ def bias_info_for(sym, now, cache):
     cache[sym] = info
     return info
 
+def snapshot(syms, now, cache):
+    """Current price, change since the last daily close, and the 1H-level trend for each symbol."""
+    out = {}
+    for sym in syms:
+        try:
+            b1 = get_candles(sym, "1m", now)                 # last closed 1-minute bar = price now
+            d1 = get_candles(sym, "1d", now)
+            price = b1[-1].c
+            prev = d1[-1].c if d1 else None
+            info = bias_info_for(sym, now, cache)
+            out[sym] = {"price": price, "chg": (price / prev - 1) * 100 if prev else None,
+                        "trend": info.get("by_tf", {}).get("1h", info.get("now", 0))}
+        except Exception as e:
+            log.warning("snapshot %s: %s", sym, e)
+    return out
+
 def watch_pairs(eng, symbols, tfs):
     pairs = set()
     if eng.tg is not None and eng.tg.channel and CHANNEL_FEED:
@@ -902,6 +1053,9 @@ def watch_pairs(eng, symbols, tfs):
 def run(symbols, tfs, tg, once=False, minutes=0):
     eng, cache, nxt = Engine(tg), {}, {}
     log.info("Phoenix HAZ bot running: %s | %s | provider=%s", ",".join(symbols), ",".join(tfs), ENV("DATA_PROVIDER", "yahoo"))
+    eng.snap_fn = lambda syms: snapshot(syms, int(time.time()), cache)
+    if not tg.dry:
+        tg.setup()
     if not tg.dry and not tg.check() and tg.channel:
         log.warning("Channel disabled for this run: signals go to private subscribers only (fix TELEGRAM_CHAT_ID or remove it)")
         tg.channel = ""
@@ -909,7 +1063,7 @@ def run(symbols, tfs, tg, once=False, minutes=0):
     while True:
         now = int(time.time())
         eng.poll()                                          # users choosing their signals
-        eng.friday_report(now)
+        eng.daily_messages(now)
         for sym, tf in watch_pairs(eng, symbols, tfs):
             key = f"{sym}|{tf}"
             if now < nxt.get(key, 0):
@@ -967,7 +1121,7 @@ def selftest():
         eng.process_bar("XAUUSD", "5m", bars[max(0, i - 300):i + 1], info, is_latest=True)
     kinds = {}
     for k, t in fb.log:
-        key = k + ":" + next((w for w in ("PENDING ORDER", "FILLED", "TARGET", "STOP HIT", "PROTECT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
+        key = k + ":" + next((w for w in ("New signal", "FILLED", "TARGET", "STOP LOSS HIT", "PROTECT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
         kinds[key] = kinds.get(key, 0) + 1
     print("messages by type:", json.dumps(kinds, indent=1))
     print("ledger entries:", len(eng.ledger))
@@ -1026,9 +1180,9 @@ def simulate():
                 else:
                     if "FILLED" in t: cnt["fill"] += 1
                     if "TARGET" in t and "HIT" in t: cnt["tp"] += 1
-                    if "STOP HIT" in t: cnt["sl"] += 1
+                    if "STOP LOSS HIT" in t: cnt["sl"] += 1
                     if "STOPPED AT ENTRY" in t: cnt["be"] += 1
-                key = k + "|" + next((w for w in ("PENDING ORDER", "FILLED", "TARGET 1 HIT", "TARGET 2 HIT", "STOP HIT", "STOPPED AT ENTRY", "PROTECTED EXIT", "PROTECT", "TIME LIMIT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
+                key = k + "|" + next((w for w in ("New signal", "FILLED", "TARGET HIT", "STOP LOSS HIT", "STOPPED AT ENTRY", "PROTECTED EXIT", "PROTECT", "TIME LIMIT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
                 samples.setdefault(key, strip_tags(t))
             for w, n in eng.stats["why"].items():
                 why_all[w] = why_all.get(w, 0) + n
@@ -1098,3 +1252,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
