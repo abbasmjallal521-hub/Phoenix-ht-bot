@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v12)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v13)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -329,6 +329,52 @@ CLOSE_LINES = [
 ]
 QN = 0   # rotating counter, saved in the state file so phrases never repeat back to back
 
+# a light joke under the result messages (JOKES=0 turns them off)
+JOKES = ENV("JOKES", "1") == "1"
+JOKES_TP = [
+    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
+    "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
+    "ضرب التارغت وما لحق يشرب قهوتو ☕️",
+    "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
+    "الشمعة طلعت أسرع من سيرفيس الحمرا بيوم أحد 🚐",
+    "خلّي الأرباح تشتغل، ونحنا منشتغل عالانضباط 💪",
+    "تارغت مضروب… حدا يبلّغ البنك إنو جايين 🏦",
+    "السوق قال: خود يا معلّم 🎁",
+    "مبروك! بس ما تصير تشتري يخت من أول صفقة ⛵️",
+    "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
+    "اليوم السعر سمع الكلمة من أول مرة 👂",
+    "ربح وبهدوء… هيدا اسمو احتراف 🎯",
+]
+JOKES_SL = [
+    "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
+    "السوق أخد أجرة الدرس، والدرس محفوظ 📚",
+    "خسارة صغيرة ومحسوبة… الكبار بيخسروا صغير 😌",
+    "حتى العنقاء بتوقع قبل ما تطير من جديد 🔥",
+    "اليوم السعر كان معصّب شوي، بكرا بيروق ☁️",
+    "هيدي مش خسارة، هيدي ضريبة دخول السوق 🧾",
+    "ولا يهمك، الشمس بتطلع بكرا وكمان التارغت 🌅",
+    "السوق قال: مش هلّق يا حبيبي ⏳",
+    "ستوب صغير أحسن من حساب فاضي 🙏",
+    "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
+]
+JOKES_SAFE = [
+    "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
+    "لا ربحنا ولا خسرنا… بس السوق عرف إنو نحنا مش لقمة سهلة 😏",
+    "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
+    "ربح مقفول بالجيبة، والباقي عالله 🔒",
+    "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
+]
+JN = 0
+
+def joke(pool):
+    """Next line from a joke list (rotates, saved with the state). Empty when JOKES is off."""
+    global JN
+    if not JOKES or not pool:
+        return ""
+    j = pool[JN % len(pool)]
+    JN += 1
+    return f"\n\n😄 <i>{html.escape(j)}</i>"
+
 def quote():
     global QN
     q = QUOTES[QN % len(QUOTES)]
@@ -399,23 +445,23 @@ def msg_tp(o, i, final):
     near = pct(o["adv"], o["risk"])
     extra = "" if final else f"\nMove your stop to entry. Next target <code>{fmt(sym, o['tps'][i + 1])}</code>."
     return (f"✅ <b>TARGET HIT</b> · +{r:g}R · +{gain} pips 🎉\nمبروك، ضرب الهدف\n{html.escape(short(o))}{extra}\n\n"
-            f"Closest it came to the stop: <b>{near}%</b> of the way." + footer())
+            f"Closest it came to the stop: <b>{near}%</b> of the way." + joke(JOKES_TP) + footer())
 
 def msg_sl(o):
     sym = o["sym"]
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"❌ <b>STOP LOSS HIT</b> · −1R · −{pips(sym, o['sl'] - o['trig'])} pips\n"
             f"ضرب وقف الخسارة. خسارة صغيرة ومحسوبة، ومنكمّل بانضباط.\n{html.escape(short(o))}\n\n"
-            f"Best it reached toward the target: <b>{best}%</b> of the way." + footer())
+            f"Best it reached toward the target: <b>{best}%</b> of the way." + joke(JOKES_SL) + footer())
 
 def msg_be(o):
     if o.get("hits", 0) > 0:
         best = pct(o["fav"], abs(o["tps"][-1] - o["trig"]))
         return (f"⚖️ <b>STOPPED AT ENTRY</b> · target 1 was already reached ✅\n{html.escape(short(o))}\n\n"
-                f"The rest closed at entry. Best toward the last target: <b>{best}%</b>." + footer())
+                f"The rest closed at entry. Best toward the last target: <b>{best}%</b>." + joke(JOKES_SAFE) + footer())
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"🛡 <b>PROTECTED EXIT</b> · 0R · طلعت على الدخول بدون خسارة\n{html.escape(short(o))}\n\n"
-            f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + footer())
+            f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + joke(JOKES_SAFE) + footer())
 
 def msg_protect(o, share):
     return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
@@ -439,7 +485,7 @@ def msg_locked(o):
     sym = o["sym"]; d = o.get("lock_d", 0.0)
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"🔒 <b>PROFIT LOCKED EXIT</b> · +{pips(sym, d)} pips ✅\nطلعت بربح مقفول\n{html.escape(short(o))}\n\n"
-            f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + footer())
+            f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + joke(JOKES_SAFE) + footer())
 
 def sel_text(sub):
     s = ", ".join(INSTRUMENTS[x]["name"] for x in sub["syms"]) or "—"
@@ -847,11 +893,12 @@ class Engine:
 
     # ── state
     def load(self):
-        global QN
+        global QN, JN
         if os.path.exists(STATE_FILE):
             try:
                 d = json.load(open(STATE_FILE, encoding="utf-8"))
                 self.pairs, self.sent, QN = d.get("pairs", {}), d.get("sent", {}), d.get("q", 0)
+                JN = d.get("j", 0)
                 self.subs, self.ledger, self.meta = d.get("subs", {}), d.get("ledger", []), d.get("meta", {})
                 if self.meta.get("feed", "yahoo") != provider():   # new data source: old offsets do not apply
                     log.info("data source changed %s -> %s: price offsets reset", self.meta.get("feed", "yahoo"), provider())
@@ -871,7 +918,7 @@ class Engine:
         if getattr(self.bc, "dry", False):          # a dry run must never write state (fake message ids)
             return
         tmp = STATE_FILE + ".tmp"
-        json.dump({"orders": self.orders[-400:], "pairs": self.pairs, "q": QN, "subs": self.subs, "ledger": self.ledger,
+        json.dump({"orders": self.orders[-400:], "pairs": self.pairs, "q": QN, "j": JN, "subs": self.subs, "ledger": self.ledger,
                    "meta": self.meta, "sent": dict(sorted(self.sent.items())[-3:])}, open(tmp, "w", encoding="utf-8"))
         os.replace(tmp, STATE_FILE)
 
