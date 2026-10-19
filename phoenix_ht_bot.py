@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v13)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v14)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -568,24 +568,35 @@ def msg_morning(sub, snap, dt, lines_i):
             f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 70%, lock profit at 80%.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
-def msg_close(sub, summ, n_signals, weekly, lines_i):
+def stats_text(sub, ledger, ref_ts):
+    """Results per instrument (each with its own pips and $), then the total in $ only:
+    pips of different instruments can not be added together."""
+    syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
+    blocks = []
+    for sym in syms:
+        sm = summarize(ledger, [sym], sub["tfs"], sub["lot"], ref_ts)
+        head = f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name']}</b>"
+        if not any(sm[k]["win"] or sm[k]["loss"] for k in ("day", "week", "month")):
+            blocks.append(f"{head}  <i>· no closed trades this month</i>")
+            continue
+        rows = [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L {sm[k]['pips']:>+7,.0f}p {sm[k]['usd']:>+9,.2f}$</code>"
+                for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
+        blocks.append(head + "\n" + "\n".join(rows))
+    tot = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)
+    trows = [f"<code>{name:<6}{tot[k]['win']:>3}W{tot[k]['loss']:>3}L {tot[k]['usd']:>+9,.2f}$</code>"
+             for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
+    return "\n\n".join(blocks) + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(trows)
+
+def msg_close(sub, stats, n_signals, weekly, lines_i):
     en, ar = CLOSE_LINES[lines_i % len(CLOSE_LINES)]
     head = "🌙 <b>WEEK CLOSED</b> · سكّر السوق للأسبوع" if weekly else "🌙 <b>MARKET CLOSED</b> · سكّر السوق"
-    rows = []
-    for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month")):
-        o = summ[k]
-        rows.append(f"<code>{name:<6} {o['win']}W {o['loss']}L  {o['pips']:+,.0f} pips  {o['usd']:+,.2f}$</code>")
-    return (f"{head}\n{LINE}\n📨 Signals today: <b>{n_signals}</b>\n\n" + "\n".join(rows) +
+    return (f"{head}\n{LINE}\n📨 Signals today: <b>{n_signals}</b>\n\n" + stats +
             f"\n\n<i>Lot {sub['lot']:g} · estimates from each plan's target and stop.</i>\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
-def msg_report(sub, summ, title="REPORT"):
+def msg_report(sub, stats, title="REPORT"):
     s, t = sel_text(sub)
-    rows = []
-    for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month")):
-        o = summ[k]
-        rows.append(f"<code>{name:<6} {o['win']}W {o['loss']}L  {o['pips']:+,.0f} pips  {o['usd']:+,.2f}$</code>")
-    return (f"📊 <b>PHOENIX HAZ SMC</b>  ·  {title}\n{LINE}\n📈 <b>{s}</b> · ⏱ <b>{t}</b>\n\n" + "\n".join(rows) +
+    return (f"📊 <b>PHOENIX HAZ SMC</b>  ·  {title}\n{LINE}\n⏱ <b>{t}</b>\n\n" + stats +
             f"\n\n<i>Lot {sub['lot']:g}. Estimates from each plan's target and stop, not your broker statement.</i>\n"
             f"<i>التقديرات مبنية على هدف ووقف كل خطة وليست كشف حسابك لدى الوسيط.</i>" + footer())
 
@@ -1147,8 +1158,7 @@ class Engine:
         return self.subs.setdefault(str(chat), {"syms": [], "tfs": [], "lot": LOT_DEFAULT, "name": name})
 
     def send_report(self, chat, sub, title="REPORT"):
-        summ = summarize(self.ledger, sub["syms"], sub["tfs"], sub["lot"], time.time())
-        self.tg.send(msg_report(sub, summ, title), chat=chat)
+        self.tg.send(msg_report(sub, stats_text(sub, self.ledger, time.time()), title), chat=chat)
 
     def is_owner(self, cid):
         owner = str(ENV("ADMIN_ID", "") or self.meta.get("owner") or next(iter(self.subs), ""))
@@ -1310,7 +1320,7 @@ class Engine:
             self.meta["close"] = key
             weekly, i = ny.weekday() == 4, ny.toordinal()
             n_sig = self.sent.get(key, 0)
-            self._broadcast_daily(lambda sub: msg_close(sub, summarize(self.ledger, sub["syms"], sub["tfs"], sub["lot"], now),
+            self._broadcast_daily(lambda sub: msg_close(sub, stats_text(sub, self.ledger, now),
                                                         n_sig, weekly, i))
             self.save()
 
