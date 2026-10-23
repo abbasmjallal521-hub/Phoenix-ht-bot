@@ -336,37 +336,37 @@ QN = 0   # rotating counter, saved in the state file so phrases never repeat bac
 # a light joke under the result messages (JOKES=0 turns them off)
 JOKES = ENV("JOKES", "1") == "1"
 JOKES_TP = [
-‎    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
-‎    "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
-‎    "ضرب التارغت وما لحق يشرب قهوتو ☕️",
-‎    "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
-‎    "الشمعة طلعت أسرع من سيرفيس الحمرا بيوم أحد 🚐",
-‎    "خلّي الأرباح تشتغل، ونحنا منشتغل عالانضباط 💪",
-‎    "تارغت مضروب… حدا يبلّغ البنك إنو جايين 🏦",
-‎    "السوق قال: خود يا معلّم 🎁",
-‎    "مبروك! بس ما تصير تشتري يخت من أول صفقة ⛵️",
-‎    "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
-‎    "اليوم السعر سمع الكلمة من أول مرة 👂",
-‎    "ربح وبهدوء… هيدا اسمو احتراف 🎯",
+    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
+    "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
+    "ضرب التارغت وما لحق يشرب قهوتو ☕️",
+    "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
+    "الشمعة طلعت أسرع من سيرفيس الحمرا بيوم أحد 🚐",
+    "خلّي الأرباح تشتغل، ونحنا منشتغل عالانضباط 💪",
+    "تارغت مضروب… حدا يبلّغ البنك إنو جايين 🏦",
+    "السوق قال: خود يا معلّم 🎁",
+    "مبروك! بس ما تصير تشتري يخت من أول صفقة ⛵️",
+    "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
+    "اليوم السعر سمع الكلمة من أول مرة 👂",
+    "ربح وبهدوء… هيدا اسمو احتراف 🎯",
 ]
 JOKES_SL = [
-‎    "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
-‎    "السوق أخد أجرة الدرس، والدرس محفوظ 📚",
-‎    "خسارة صغيرة ومحسوبة… الكبار بيخسروا صغير 😌",
-‎    "حتى العنقاء بتوقع قبل ما تطير من جديد 🔥",
-‎    "اليوم السعر كان معصّب شوي، بكرا بيروق ☁️",
-‎    "هيدي مش خسارة، هيدي ضريبة دخول السوق 🧾",
-‎    "ولا يهمك، الشمس بتطلع بكرا وكمان التارغت 🌅",
-‎    "السوق قال: مش هلّق يا حبيبي ⏳",
-‎    "ستوب صغير أحسن من حساب فاضي 🙏",
-‎    "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
+    "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
+    "السوق أخد أجرة الدرس، والدرس محفوظ 📚",
+    "خسارة صغيرة ومحسوبة… الكبار بيخسروا صغير 😌",
+    "حتى العنقاء بتوقع قبل ما تطير من جديد 🔥",
+    "اليوم السعر كان معصّب شوي، بكرا بيروق ☁️",
+    "هيدي مش خسارة، هيدي ضريبة دخول السوق 🧾",
+    "ولا يهمك، الشمس بتطلع بكرا وكمان التارغت 🌅",
+    "السوق قال: مش هلّق يا حبيبي ⏳",
+    "ستوب صغير أحسن من حساب فاضي 🙏",
+    "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
 ]
 JOKES_SAFE = [
-‎    "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
-‎    "لا ربحنا ولا خسرنا… بس السوق عرف إنو نحنا مش لقمة سهلة 😏",
-‎    "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
-‎    "ربح مقفول بالجيبة، والباقي عالله 🔒",
-‎    "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
+    "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
+    "لا ربحنا ولا خسرنا… بس السوق عرف إنو نحنا مش لقمة سهلة 😏",
+    "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
+    "ربح مقفول بالجيبة، والباقي عالله 🔒",
+    "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
 ]
 JN = 0
 
@@ -494,7 +494,7 @@ def msg_menu(sub):
     s, t = sel_text(sub)
     return (f"⚙️ <b>PHOENIX HAZ SMC</b>  ·  <i>Signal settings · الإعدادات</i>\n{LINE}\n"
             "Tap to turn an instrument or timeframe on or off.\n"
-‎            "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
+            "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
             f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n\n"
             f"💰 /price  ·  📊 /report  ·  🔎 /status  ·  ⏸ /stop\n{SIGN}")
 
@@ -524,7 +524,7 @@ def msg_welcome(name):
     who = html.escape(name) if name else "trader"
     return (f"🔥 <b>Welcome to PHOENIX HAZ SMC</b>\nأهلاً وسهلاً فيك يا {who} 🤝\n{LINE}\n"
             "Smart-money pending orders on Gold, Silver, Dow, Nasdaq and Oil: entry, stop and target, followed live until the end.\n"
-‎            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
+            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
             "<b>What you get · شو بيوصلك</b>\n"
             "🎯 Every order with the price now, entry, stop and target\n"
             "⚡ Live updates: filled, protect, target, stop\n"
@@ -611,7 +611,7 @@ BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Price
                 ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("stop", "Pause all signals"), ("help", "Help")]
 BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, Silver, Dow, Nasdaq and Oil: price now, entry, stop, "
                    "target and live follow-up. Morning brief and market-close summary.\n"
-‎                   "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
+                   "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
                    "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
 
@@ -1224,7 +1224,7 @@ class Engine:
                 self.do_calibrate(cid, sym, float(parts[1]))
             except (ValueError, IndexError):
                 self.tg.send("🎯 Choose the instrument, then send the price your chart shows now.\n"
-‎                             "اختار الأداة، وبعدين ابعت السعر يلي على شارتك هلق.", chat=cid, markup=calib_markup())
+                             "اختار الأداة، وبعدين ابعت السعر يلي على شارتك هلق.", chat=cid, markup=calib_markup())
         elif cmd == "/price":
             snap = self.snap_fn(sub["syms"] or list(INSTRUMENTS)) if self.snap_fn else {}
             self.tg.send(msg_price(sub, snap), chat=cid)
