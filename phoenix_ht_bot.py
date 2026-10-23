@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v14)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v15)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -91,17 +91,20 @@ MOVE_PER_BAR = float(ENV("MOVE_PER_BAR", "0.5"))     # net ATR price travels per
 MAX_HOLD_HOURS = float(ENV("MAX_HOLD_HOURS", "24"))   # the last target must be reachable within this many hours
 
 # quality rules (fewer stop-outs)
-BE_AT_R = float(ENV("BE_AT_R", "0.7"))               # move the stop to entry after this share of the way to target 1 (0 = off)
-LOCK_AT = float(ENV("LOCK_AT", "0.8"))               # then, at this share of the way, move the stop into profit (0 = off)
-LOCK_USD = float(ENV("LOCK_USD", "5"))               # profit locked at that point, in $ at LOCK_LOT
-LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))
-LOCK_MAX = float(ENV("LOCK_MAX", "0.5"))             # never lock more than this share of the target (keeps the stop below price)
+# trade protection in 3 steps (same as the indicator v12), shares of the way to the target:
+BE_AT_R = float(ENV("BE_AT_R", "0.5"))               # step 1: at 50% the stop moves to entry (0 = off)
+LOCK1_AT = float(ENV("LOCK1_AT", "0.7"))             # step 2: at 70% ...
+LOCK1_TO = float(ENV("LOCK1_TO", "0.5"))             # ... the stop moves to 50% of the target (profit locked)
+LOCK2_AT = float(ENV("LOCK2_AT", "0.8"))             # step 3: at 80% ...
+LOCK2_TO = float(ENV("LOCK2_TO", "0.7"))             # ... the stop moves to 70% of the target
+LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))   # lot used for the $ shown in the lock message
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
 NEUTRAL_FADE = ENV("NEUTRAL_FADE", "1") == "1"       # mixed trend: only reversal (limit) orders, no breakouts
 SWEEP_BUFFER = float(ENV("SWEEP_BUFFER_ATR", "0.25"))   # extra stop room (ATR) so a quick stop-hunt wick does not take the trade out
 FAKE_BREAK_BARS = int(ENV("FAKE_BREAK_BARS", "6"))      # a wick beyond the range that closes back inside within this many bars = fake breakout
-DAY_START_HOUR = int(ENV("DAY_START_HOUR", "18"))       # trading day starts (NY hour): totals reset at market open
+DAY_START_HOUR = int(ENV("DAY_START_HOUR", "0"))        # totals reset at this hour of DAY_TIMEZONE (0 = midnight)
+DAY_TZ = ZoneInfo(ENV("DAY_TIMEZONE", "Asia/Beirut"))     # time zone of the daily reset (Beirut, like the indicator)
 REPORT_HOUR = int(ENV("REPORT_HOUR", "17"))             # market-close message time (NY hour, sent at :05). Friday = weekly
 MSG_TZ = ZoneInfo(ENV("MSG_TIMEZONE", "Asia/Beirut"))    # time zone of the morning message
 MORNING_HOUR = int(ENV("MORNING_HOUR", "9"))            # morning message hour (MSG_TIMEZONE), Monday to Friday
@@ -240,8 +243,8 @@ def pct(x, base):
     return int(max(0, min(99, x / base * 100))) if base > 0 else 0
 
 def trading_day(ts):
-    """The trading day starts at market open (DAY_START_HOUR New York), not at midnight."""
-    return (datetime.fromtimestamp(ts, TZ) + timedelta(hours=24 - DAY_START_HOUR)).date()
+    """The day of the totals: starts at DAY_START_HOUR in DAY_TZ (default midnight Beirut)."""
+    return (datetime.fromtimestamp(ts, DAY_TZ) + timedelta(hours=(24 - DAY_START_HOUR) % 24)).date()
 
 def realized(o, exit_px=None):
     """Signed price distance banked by an order (when there are several targets the position is split equally)."""
@@ -261,7 +264,7 @@ def money(sym, dist, lot):
 
 def summarize(ledger, syms, tfs, lot, ref_ts):
     td = trading_day(ref_ts); wk = td.isocalendar()[:2]; mo = (td.year, td.month)
-    out = {k: dict(pips=0.0, usd=0.0, win=0, loss=0) for k in ("day", "week", "month")}
+    out = {k: dict(pips=0.0, usd=0.0, win=0, loss=0, be=0) for k in ("day", "week", "month")}
     for e in ledger:
         if e["sym"] not in syms or e["tf"] not in tfs:
             continue
@@ -272,6 +275,7 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
                 o = out[key]; o["pips"] += pp; o["usd"] += uu
                 if e["dist"] > 0: o["win"] += 1
                 elif e["dist"] < 0: o["loss"] += 1
+                else: o["be"] += 1                    # closed at entry (protected exit)
     return out
 
 # ───────────────────────────── messages ─────────────────────────────
@@ -332,37 +336,37 @@ QN = 0   # rotating counter, saved in the state file so phrases never repeat bac
 # a light joke under the result messages (JOKES=0 turns them off)
 JOKES = ENV("JOKES", "1") == "1"
 JOKES_TP = [
-    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
-    "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
-    "ضرب التارغت وما لحق يشرب قهوتو ☕️",
-    "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
-    "الشمعة طلعت أسرع من سيرفيس الحمرا بيوم أحد 🚐",
-    "خلّي الأرباح تشتغل، ونحنا منشتغل عالانضباط 💪",
-    "تارغت مضروب… حدا يبلّغ البنك إنو جايين 🏦",
-    "السوق قال: خود يا معلّم 🎁",
-    "مبروك! بس ما تصير تشتري يخت من أول صفقة ⛵️",
-    "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
-    "اليوم السعر سمع الكلمة من أول مرة 👂",
-    "ربح وبهدوء… هيدا اسمو احتراف 🎯",
+‎    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
+‎    "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
+‎    "ضرب التارغت وما لحق يشرب قهوتو ☕️",
+‎    "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
+‎    "الشمعة طلعت أسرع من سيرفيس الحمرا بيوم أحد 🚐",
+‎    "خلّي الأرباح تشتغل، ونحنا منشتغل عالانضباط 💪",
+‎    "تارغت مضروب… حدا يبلّغ البنك إنو جايين 🏦",
+‎    "السوق قال: خود يا معلّم 🎁",
+‎    "مبروك! بس ما تصير تشتري يخت من أول صفقة ⛵️",
+‎    "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
+‎    "اليوم السعر سمع الكلمة من أول مرة 👂",
+‎    "ربح وبهدوء… هيدا اسمو احتراف 🎯",
 ]
 JOKES_SL = [
-    "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
-    "السوق أخد أجرة الدرس، والدرس محفوظ 📚",
-    "خسارة صغيرة ومحسوبة… الكبار بيخسروا صغير 😌",
-    "حتى العنقاء بتوقع قبل ما تطير من جديد 🔥",
-    "اليوم السعر كان معصّب شوي، بكرا بيروق ☁️",
-    "هيدي مش خسارة، هيدي ضريبة دخول السوق 🧾",
-    "ولا يهمك، الشمس بتطلع بكرا وكمان التارغت 🌅",
-    "السوق قال: مش هلّق يا حبيبي ⏳",
-    "ستوب صغير أحسن من حساب فاضي 🙏",
-    "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
+‎    "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
+‎    "السوق أخد أجرة الدرس، والدرس محفوظ 📚",
+‎    "خسارة صغيرة ومحسوبة… الكبار بيخسروا صغير 😌",
+‎    "حتى العنقاء بتوقع قبل ما تطير من جديد 🔥",
+‎    "اليوم السعر كان معصّب شوي، بكرا بيروق ☁️",
+‎    "هيدي مش خسارة، هيدي ضريبة دخول السوق 🧾",
+‎    "ولا يهمك، الشمس بتطلع بكرا وكمان التارغت 🌅",
+‎    "السوق قال: مش هلّق يا حبيبي ⏳",
+‎    "ستوب صغير أحسن من حساب فاضي 🙏",
+‎    "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
 ]
 JOKES_SAFE = [
-    "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
-    "لا ربحنا ولا خسرنا… بس السوق عرف إنو نحنا مش لقمة سهلة 😏",
-    "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
-    "ربح مقفول بالجيبة، والباقي عالله 🔒",
-    "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
+‎    "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
+‎    "لا ربحنا ولا خسرنا… بس السوق عرف إنو نحنا مش لقمة سهلة 😏",
+‎    "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
+‎    "ربح مقفول بالجيبة، والباقي عالله 🔒",
+‎    "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
 ]
 JN = 0
 
@@ -468,12 +472,6 @@ def msg_protect(o, share):
             f"انقل الستوب على سعر الدخول\n{html.escape(short(o))}\n\n"
             f"Move your stop to entry: from here the trade can not turn into a loss." + footer())
 
-def lock_dist(o):
-    """Price distance that locks LOCK_USD at LOCK_LOT, capped at LOCK_MAX of the target."""
-    tgt = abs(o["tps"][0] - o["trig"])
-    usd = LOCK_USD / max(INSTRUMENTS[o["sym"]]["contract"] * LOCK_LOT, 1e-9)
-    return min(usd, LOCK_MAX * tgt)
-
 def msg_lock(o, share):
     sym = o["sym"]; d = o["lock_d"]
     usd = d * INSTRUMENTS[sym]["contract"] * LOCK_LOT
@@ -496,7 +494,7 @@ def msg_menu(sub):
     s, t = sel_text(sub)
     return (f"⚙️ <b>PHOENIX HAZ SMC</b>  ·  <i>Signal settings · الإعدادات</i>\n{LINE}\n"
             "Tap to turn an instrument or timeframe on or off.\n"
-            "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
+‎            "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
             f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n\n"
             f"💰 /price  ·  📊 /report  ·  🔎 /status  ·  ⏸ /stop\n{SIGN}")
 
@@ -526,7 +524,7 @@ def msg_welcome(name):
     who = html.escape(name) if name else "trader"
     return (f"🔥 <b>Welcome to PHOENIX HAZ SMC</b>\nأهلاً وسهلاً فيك يا {who} 🤝\n{LINE}\n"
             "Smart-money pending orders on Gold, Silver, Dow, Nasdaq and Oil: entry, stop and target, followed live until the end.\n"
-            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
+‎            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
             "<b>What you get · شو بيوصلك</b>\n"
             "🎯 Every order with the price now, entry, stop and target\n"
             "⚡ Live updates: filled, protect, target, stop\n"
@@ -565,7 +563,7 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 70%, lock profit at 80%.\n\n"
+            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 50%, lock half the target at 70%, lock 70% at 80%.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
@@ -576,16 +574,17 @@ def stats_text(sub, ledger, ref_ts):
     for sym in syms:
         sm = summarize(ledger, [sym], sub["tfs"], sub["lot"], ref_ts)
         head = f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name']}</b>"
-        if not any(sm[k]["win"] or sm[k]["loss"] for k in ("day", "week", "month")):
+        if not any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month")):
             blocks.append(f"{head}  <i>· no closed trades this month</i>")
             continue
-        rows = [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L {sm[k]['pips']:>+7,.0f}p {sm[k]['usd']:>+9,.2f}$</code>"
+        rows = [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L{sm[k]['be']:>3}BE {sm[k]['pips']:>+7,.0f}p {sm[k]['usd']:>+9,.2f}$</code>"
                 for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
         blocks.append(head + "\n" + "\n".join(rows))
     tot = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)
-    trows = [f"<code>{name:<6}{tot[k]['win']:>3}W{tot[k]['loss']:>3}L {tot[k]['usd']:>+9,.2f}$</code>"
+    trows = [f"<code>{name:<6}{tot[k]['win']:>3}W{tot[k]['loss']:>3}L{tot[k]['be']:>3}BE {tot[k]['usd']:>+9,.2f}$</code>"
              for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
-    return "\n\n".join(blocks) + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(trows)
+    return ("\n\n".join(blocks) + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(trows) +
+            "\n<i>W ربح · L خسارة · BE طلعت على الدخول (0$)</i>")
 
 def msg_close(sub, stats, n_signals, weekly, lines_i):
     en, ar = CLOSE_LINES[lines_i % len(CLOSE_LINES)]
@@ -612,7 +611,7 @@ BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Price
                 ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("stop", "Pause all signals"), ("help", "Help")]
 BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, Silver, Dow, Nasdaq and Oil: price now, entry, stop, "
                    "target and live follow-up. Morning brief and market-close summary.\n"
-                   "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
+‎                   "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
                    "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
 
@@ -1048,15 +1047,22 @@ class Engine:
                 else:
                     o["fav"], o["adv"] = max(o["fav"], fav), max(o["adv"], adv)
                     self._hits(o, bar, d)
-                    if o["state"] == OPEN and not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * abs(o["tps"][0] - trig):
-                        o["be"] = True                                # protect: stop moves to entry
-                        self.say(o, msg_protect(o, pct(o["fav"], abs(o["tps"][0] - trig))))
-                    elif (o["state"] == OPEN and o["be"] and not o.get("locked") and LOCK_AT > 0
-                          and o["fav"] >= LOCK_AT * abs(o["tps"][0] - trig)):
-                        o["lock_d"] = lock_dist(o)                    # lock: stop moves into profit
-                        o["lock_px"] = trig + d * o["lock_d"]
-                        o["locked"] = True
-                        self.say(o, msg_lock(o, pct(o["fav"], abs(o["tps"][0] - trig))))
+                    if o["state"] == OPEN:
+                        # protection in 3 steps; several can happen in one bar, the stop only moves forward
+                        tg = abs(o["tps"][0] - trig)
+                        protect = False
+                        if not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * tg:
+                            o["be"] = True                            # step 1: stop to entry
+                            protect = True
+                        new_d = None
+                        for at, to in ((LOCK1_AT, LOCK1_TO), (LOCK2_AT, LOCK2_TO)):
+                            if at > 0 and to > 0 and o["fav"] >= at * tg and to * tg > o.get("lock_d", 0.0) + 1e-12:
+                                new_d = to * tg                       # steps 2 and 3: stop into profit
+                        if new_d is not None:
+                            o.update(be=True, locked=True, lock_d=new_d, lock_px=trig + d * new_d)
+                            self.say(o, msg_lock(o, pct(o["fav"], tg)))
+                        elif protect:
+                            self.say(o, msg_protect(o, pct(o["fav"], tg)))
 
         # 2) housekeeping: nothing is closed at the end of the session; only very old orders are dropped
         for o in self.orders:
@@ -1218,7 +1224,7 @@ class Engine:
                 self.do_calibrate(cid, sym, float(parts[1]))
             except (ValueError, IndexError):
                 self.tg.send("🎯 Choose the instrument, then send the price your chart shows now.\n"
-                             "اختار الأداة، وبعدين ابعت السعر يلي على شارتك هلق.", chat=cid, markup=calib_markup())
+‎                             "اختار الأداة، وبعدين ابعت السعر يلي على شارتك هلق.", chat=cid, markup=calib_markup())
         elif cmd == "/price":
             snap = self.snap_fn(sub["syms"] or list(INSTRUMENTS)) if self.snap_fn else {}
             self.tg.send(msg_price(sub, snap), chat=cid)
@@ -1320,7 +1326,8 @@ class Engine:
             self.meta["close"] = key
             weekly, i = ny.weekday() == 4, ny.toordinal()
             n_sig = self.sent.get(key, 0)
-            self._broadcast_daily(lambda sub: msg_close(sub, stats_text(sub, self.ledger, now),
+            ref = ny.replace(hour=12, minute=0, second=0).timestamp()   # midday NY = the Beirut day that is closing
+            self._broadcast_daily(lambda sub: msg_close(sub, stats_text(sub, self.ledger, ref),
                                                         n_sig, weekly, i))
             self.save()
 
@@ -1582,4 +1589,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
