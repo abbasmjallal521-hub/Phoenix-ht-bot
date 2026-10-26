@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v18)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v19)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -661,32 +661,39 @@ def msg_morning(sub, snap, dt, lines_i):
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
-    """Results per instrument (each with its own pips and $), then the total in $ only:
-    pips of different instruments can not be added together."""
+    """Every instrument with every timeframe (Gold 5M, Gold 15M ...), then each timeframe for all
+    instruments together, then the total. Money in $ (pips of different instruments can not be added)."""
     syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
-    blocks = []
-    for sym in syms:
-        sm = summarize(ledger, [sym], sub["tfs"], sub["lot"], ref_ts)
-        head = f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name']}</b>"
-        if not any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month")):
-            blocks.append(f"{head}  <i>· no closed trades this month</i>")
-            continue
-        rows = [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L{sm[k]['be']:>3}BE {sm[k]['pips']:>+7,.0f}p {sm[k]['usd']:>+9,.2f}$</code>"
-                for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
-        blocks.append(head + "\n" + "\n".join(rows))
-    def usd_rows(sm):
+    tfs = [t for t in TF_SEC if t in sub["tfs"]]
+    has = lambda sm: any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month"))
+
+    def usd_rows(sm):                         # narrow rows: fit a phone screen without wrapping
         return [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L{sm[k]['be']:>3}BE {sm[k]['usd']:>+9,.2f}$</code>"
                 for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
-    # results per timeframe (all chosen instruments together, in $)
-    tf_blocks = []
-    for tf in [t for t in TF_SEC if t in sub["tfs"]]:
-        sm = summarize(ledger, syms, [tf], sub["lot"], ref_ts)
-        if not any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month")):
+
+    blocks = []
+    for sym in syms:
+        allm = summarize(ledger, [sym], tfs, sub["lot"], ref_ts)
+        head = f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name']}</b>"
+        if not has(allm):
+            blocks.append(f"{head}  <i>· no closed trades this month</i>")
             continue
-        tf_blocks.append(f"⏱ <b>{tf.upper()}</b>\n" + "\n".join(usd_rows(sm)))
-    tf_txt = ("\n\n📐 <b>By timeframe · حسب الفريم</b> (in $)\n" + "\n\n".join(tf_blocks)) if tf_blocks else ""
-    tot = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)
-    return ("\n\n".join(blocks) + tf_txt + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(usd_rows(tot)) +
+        mo = allm["month"]
+        parts = [f"{head}  <i>· month {mo['usd']:+,.2f}$ · {mo['pips']:+,.0f} pips</i>"]
+        for tf in tfs:
+            sm = summarize(ledger, [sym], [tf], sub["lot"], ref_ts)
+            if has(sm):
+                parts.append(f"⏱ <b>{INSTRUMENTS[sym]['name']} · {tf.upper()}</b>\n" + "\n".join(usd_rows(sm)))
+        blocks.append("\n".join(parts[:1]) + "\n" + "\n\n".join(parts[1:]))
+
+    tf_blocks = []                            # each timeframe, all chosen instruments together
+    for tf in tfs:
+        sm = summarize(ledger, syms, [tf], sub["lot"], ref_ts)
+        if has(sm):
+            tf_blocks.append(f"⏱ <b>{tf.upper()}</b>\n" + "\n".join(usd_rows(sm)))
+    tf_txt = ("\n\n📐 <b>By timeframe · حسب الفريم</b> (all instruments)\n" + "\n\n".join(tf_blocks)) if tf_blocks else ""
+    tot = summarize(ledger, syms, tfs, sub["lot"], ref_ts)
+    return ("\n\n".join(blocks) + tf_txt + f"\n\n💼 <b>Total · المجموع</b>\n" + "\n".join(usd_rows(tot)) +
             "\n<i>W ربح · L خسارة · BE طلعت على الدخول (0$)</i>")
 
 def today_line(sub, ledger, ref_ts):
