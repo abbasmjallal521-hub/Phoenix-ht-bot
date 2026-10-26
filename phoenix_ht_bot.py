@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v15)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v18)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -20,7 +20,7 @@ Usage:
   python phoenix_ht_bot.py                    # run for real (needs .env)
   python phoenix_ht_bot.py --minutes 340      # run 340 minutes, then save and exit (GitHub Actions)
 """
-import os, sys, json, time, html, random, argparse, logging
+import os, re, sys, json, time, html, random, argparse, logging
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
@@ -336,7 +336,7 @@ QN = 0   # rotating counter, saved in the state file so phrases never repeat bac
 # a light joke under the result messages (JOKES=0 turns them off)
 JOKES = ENV("JOKES", "1") == "1"
 JOKES_TP = [
-    "الهدف انضرب، وهلّق فيك تقول لمرتك \"شغّال، مش عم إلعب عالتلفون\" 😎",
+    "الهدف انضرب، وهلّق فيك تقول لمرتك «شغّال، مش عم إلعب عالتلفون» 😎",
     "السوق اليوم مشي معنا متل ما بتمشي المي بالساقية 🌊",
     "ضرب التارغت وما لحق يشرب قهوتو ☕️",
     "هيك بيتحرّك السعر لما يعرف إنو العنقاء ناطرتو 🔥",
@@ -348,6 +348,26 @@ JOKES_TP = [
     "كبسة هدف نضيفة، متل منقوشة الصبح الطازة 🫓",
     "اليوم السعر سمع الكلمة من أول مرة 👂",
     "ربح وبهدوء… هيدا اسمو احتراف 🎯",
+    "التارغت انضرب أسرع من ما ترجع الكهربا بعد التقنين ⚡️",
+    "اليوم السوق عزمنا عالغدا وما دفّعنا الحساب 🍽",
+    "صفقة نضيفة متل صحن تبولة عند ستّي 🥗",
+    "السعر مشي عالخط متل تاكسي بيعرف الطريق 🚕",
+    "ربحنا، بس خلّي الإيد عالأرض… الانضباط أول 🙌",
+    "هيدا التارغت بيستاهل كاسة شاي وكعكة 🫖",
+    "السوق قلّنا: تفضّلوا، البيت بيتكم 🏡",
+    "ضربة معلّم… حتى الشارت انبسط 📈",
+    "مبروك! هلّق فيك تقول عن حالك تريدر بثقة 😏",
+    "الأرباح وصلت قبل الديليفري 🛵",
+    "شمعة خضرا ورا شمعة خضرا… متل عرس بالضيعة 🎉",
+    "التارغت ضرب، والمولّد بعدو شغّال كمان 🔌",
+    "ربحنا اليوم… العشا عليك يا معلّم 🍢",
+    "السعر طلع عالتارغت متل ما بيطلع الدولار بالسوق السودا 💵",
+    "هيك صفقات بتخلّي الحماة تحبّك 😅",
+    "التارغت انضرب، وحتى الجيران سمعوا الصريخ 📣",
+    "من اليوم ورايح، اسمك عالشارت: أبو التارغت 👑",
+    "صفقة بتستاهل أرگيلة عالبحر 🌊",
+    "السوق اليوم كان كريم متل عرس لبناني 💃",
+    "هيدا الربح بيكفّي بنزين للأسبوع… تقريباً ⛽️",
 ]
 JOKES_SL = [
     "الستوب عمل شغلو، متل الحزام بالسيارة 🚗",
@@ -360,6 +380,20 @@ JOKES_SL = [
     "السوق قال: مش هلّق يا حبيبي ⏳",
     "ستوب صغير أحسن من حساب فاضي 🙏",
     "خدنا نفس، شربنا مي، ومنرجع أقوى 💧",
+    "حتى أحسن طبّاخ بتنحرق معو الطبخة مرّة 🍳",
+    "السوق أخد الستوب ورجّع لنا الخبرة ببلاش 🎓",
+    "مش كل يوم عيد… بكرا منعيّد 🎈",
+    "الستوب متل المظلّة: بيحميك من الشتي الكبير ☔️",
+    "صغيرة وبتمرق… متل زحمة الدورة الصبح 🚗",
+    "السوق اليوم كان مزاجو متل الطقس بلبنان: ما بينعرف 🌦",
+    "خسرنا صفقة، ما خسرنا الخطة 📋",
+    "روق، القهوة بعدها سخنة والسوق بعدو فاتح ☕️",
+    "السوق خدلنا الستوب متل ما الصرّاف بياخد العمولة 🏧",
+    "ولا يهمك، حتى ميسي بيضيّع بنالتي ⚽️",
+    "الستوب ضرب… منقول «يللا» ومنكمّل متل كل لبناني 🇱🇧",
+    "اليوم السوق عملنا متل شرطي السير: وقّفنا بلا سبب 🚦",
+    "خسارة صغيرة، بتنتسى قبل ما يبرد الشاي 🫖",
+    "السوق بيمزح معنا… بكرا منردّلو المزحة 😏",
 ]
 JOKES_SAFE = [
     "طلعنا سالمين، والسلامة أهم من الغنيمة 🛡",
@@ -367,17 +401,76 @@ JOKES_SAFE = [
     "الحماية عملت شغلها، متل الإمّ لما تقلّك خود جاكيت 🧥",
     "ربح مقفول بالجيبة، والباقي عالله 🔒",
     "شو ما صار، رجعنا عالبيت ومعنا شي 🏠",
+    "السوق حاول يقرصنا، بس الحماية كانت أسرع 🦟",
+    "طلعنا متل الشعرة من العجينة 🍞",
+    "مش ربح كبير، بس أحسن من نومة عالخسارة 😴",
+    "الستوب المحمي عمل شغلو متل الناطور عالبناية 🏢",
+    "حبة حبة بيمتلي الكيس 💰",
+    "خرجنا بكرامتنا والجيبة سليمة 👌",
+    "متل لما تطلع من عزومة شبعان وما دفعت 😌",
+    "الحماية أحسن من التأمين الصحي عنّا 🩺",
+    "السوق فتّش جيابنا وما لقى شي 🕵️",
+    "مش كل الصفقات أبطال، في منها دبلوماسيين 🤝",
+    "صفر خسارة… هيدا بحد ذاتو انتصار 🏳️",
+]
+JOKES_TP_EN = [
+    "Target hit. Your banker just started returning your calls 📞",
+    "The market said yes faster than your crush ever did 😏",
+    "Profit secured. Tonight dinner is on you, legend 🍽",
+    "That candle ran like it saw its ex at the mall 🏃",
+    "Target hit. Screenshot it, frame it, show your mother-in-law 🖼",
+    "Green day. Even your coffee tastes richer ☕️",
+    "The chart did exactly what we told it. Good chart 🐕",
+    "Money printer goes brrr… responsibly 🖨",
+    "Another one. DJ Khaled would be proud 🎧",
+    "Target hit before the pizza arrived 🍕",
+    "Smooth like your best pickup line, but it actually worked 😎",
+    "Profit in the pocket, ego in check 💼",
+    "The market blinked first 👀",
+    "Plan, patience, payday 💸",
+    "That trade had more confidence than a gym selfie 💪",
+]
+JOKES_SL_EN = [
+    "Stop hit. Even Batman needs a backup plan 🦇",
+    "The market took a small fee for today's lesson 🎓",
+    "Small loss, big discipline. That's how the pros roll 😌",
+    "We lost the battle, not the war ⚔️",
+    "The market said 'not today'… we heard 'tomorrow' 🌅",
+    "Stop loss: the seatbelt nobody likes but everyone needs 🚗",
+    "Even Messi misses penalties sometimes ⚽️",
+    "The chart ghosted us. Its loss 👻",
+    "Deep breath, sip of water, back to the plan 💧",
+    "Losses are tuition fees. At least this class was cheap 📚",
+    "Mr. Market woke up grumpy. Happens 😤",
+    "It's not a loss, it's a plot twist 🎬",
+]
+JOKES_SAFE_EN = [
+    "Walked out safe. Ninja exit 🥷",
+    "No loss, no drama, no therapy needed 🛋",
+    "The market tried to pickpocket us. Nice try 🧤",
+    "Locked profit. Smart money moves only 🔒",
+    "Break even: the trading version of a polite handshake 🤝",
+    "We left the party before the cops came 🚓",
+    "Protected and happy, like a cat in a box 📦",
+    "A little profit is still profit. Stack it 🧱",
+    "Safe exit. Mom would be proud 👩",
+    "The stop moved up, the stress moved out 😮‍💨",
 ]
 JN = 0
+EN_MARK = "⁣"                                     # invisible mark: this line is for English-only readers
 
-def joke(pool):
-    """Next line from a joke list (rotates, saved with the state). Empty when JOKES is off."""
+def joke(pool, pool_en=None):
+    """Next joke (rotates, saved with the state): the Arabic one, plus an English one that only
+    English-only readers see. Empty when JOKES is off."""
     global JN
     if not JOKES or not pool:
         return ""
     j = pool[JN % len(pool)]
+    out = f"\n\n😄 <i>{html.escape(j)}</i>"
+    if pool_en:
+        out += f"\n{EN_MARK}😄 <i>{html.escape(pool_en[JN % len(pool_en)])}</i>"
     JN += 1
-    return f"\n\n😄 <i>{html.escape(j)}</i>"
+    return out
 
 def quote():
     global QN
@@ -449,23 +542,23 @@ def msg_tp(o, i, final):
     near = pct(o["adv"], o["risk"])
     extra = "" if final else f"\nMove your stop to entry. Next target <code>{fmt(sym, o['tps'][i + 1])}</code>."
     return (f"✅ <b>TARGET HIT</b> · +{r:g}R · +{gain} pips 🎉\nمبروك، ضرب الهدف\n{html.escape(short(o))}{extra}\n\n"
-            f"Closest it came to the stop: <b>{near}%</b> of the way." + joke(JOKES_TP) + footer())
+            f"Closest it came to the stop: <b>{near}%</b> of the way." + joke(JOKES_TP, JOKES_TP_EN) + footer())
 
 def msg_sl(o):
     sym = o["sym"]
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"❌ <b>STOP LOSS HIT</b> · −1R · −{pips(sym, o['sl'] - o['trig'])} pips\n"
             f"ضرب وقف الخسارة. خسارة صغيرة ومحسوبة، ومنكمّل بانضباط.\n{html.escape(short(o))}\n\n"
-            f"Best it reached toward the target: <b>{best}%</b> of the way." + joke(JOKES_SL) + footer())
+            f"Best it reached toward the target: <b>{best}%</b> of the way." + joke(JOKES_SL, JOKES_SL_EN) + footer())
 
 def msg_be(o):
     if o.get("hits", 0) > 0:
         best = pct(o["fav"], abs(o["tps"][-1] - o["trig"]))
         return (f"⚖️ <b>STOPPED AT ENTRY</b> · target 1 was already reached ✅\n{html.escape(short(o))}\n\n"
-                f"The rest closed at entry. Best toward the last target: <b>{best}%</b>." + joke(JOKES_SAFE) + footer())
+                f"The rest closed at entry. Best toward the last target: <b>{best}%</b>." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"🛡 <b>PROTECTED EXIT</b> · 0R · طلعت على الدخول بدون خسارة\n{html.escape(short(o))}\n\n"
-            f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + joke(JOKES_SAFE) + footer())
+            f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
 
 def msg_protect(o, share):
     return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
@@ -483,7 +576,7 @@ def msg_locked(o):
     sym = o["sym"]; d = o.get("lock_d", 0.0)
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
     return (f"🔒 <b>PROFIT LOCKED EXIT</b> · +{pips(sym, d)} pips ✅\nطلعت بربح مقفول\n{html.escape(short(o))}\n\n"
-            f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + joke(JOKES_SAFE) + footer())
+            f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
 
 def sel_text(sub):
     s = ", ".join(INSTRUMENTS[x]["name"] for x in sub["syms"]) or "—"
@@ -509,6 +602,7 @@ def menu_markup(sub, owner=False):
         rows.append([{"text": ("✅ " if x in sub["tfs"] else "▫️ ") + x.upper(), "callback_data": "t:" + x} for x in tfs[i:i + 3]])
     rows.append([{"text": "✨ All instruments", "callback_data": "sa"}, {"text": "✨ All timeframes", "callback_data": "ta"}])
     rows.append([{"text": "🧹 Clear", "callback_data": "clr"}, {"text": "📊 Report", "callback_data": "rep"}])
+    rows.append([{"text": "🌐 English only" if sub.get("lang") != "en" else "🌐 عربي + English", "callback_data": "lang"}])
     if owner:
         rows.append([{"text": "🎯 Calibrate prices · ظبّط الأسعار", "callback_data": "cal"}])
     return {"inline_keyboard": rows}
@@ -532,7 +626,7 @@ def msg_welcome(name):
             "📊 /report: today, week and month in pips and $\n\n"
             "<b>How to start · كيف تبلّش</b>\n"
             "1️⃣ Choose instruments and timeframes below · اختار الأدوات والفريمات تحت\n"
-            "2️⃣ Set your lot · حدّد اللوت: /lot 0.1\n"
+            "2️⃣ Set your lot: /lot 0.1 · حدّد اللوت\n"
             "3️⃣ Wait for your price, risk 1–2% per trade · انتظر سعرك وخاطر 1–2% بالصفقة\n" + footer())
 
 def msg_price(sub, snap):
@@ -580,16 +674,32 @@ def stats_text(sub, ledger, ref_ts):
         rows = [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L{sm[k]['be']:>3}BE {sm[k]['pips']:>+7,.0f}p {sm[k]['usd']:>+9,.2f}$</code>"
                 for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
         blocks.append(head + "\n" + "\n".join(rows))
+    def usd_rows(sm):
+        return [f"<code>{name:<6}{sm[k]['win']:>3}W{sm[k]['loss']:>3}L{sm[k]['be']:>3}BE {sm[k]['usd']:>+9,.2f}$</code>"
+                for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
+    # results per timeframe (all chosen instruments together, in $)
+    tf_blocks = []
+    for tf in [t for t in TF_SEC if t in sub["tfs"]]:
+        sm = summarize(ledger, syms, [tf], sub["lot"], ref_ts)
+        if not any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month")):
+            continue
+        tf_blocks.append(f"⏱ <b>{tf.upper()}</b>\n" + "\n".join(usd_rows(sm)))
+    tf_txt = ("\n\n📐 <b>By timeframe · حسب الفريم</b> (in $)\n" + "\n\n".join(tf_blocks)) if tf_blocks else ""
     tot = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)
-    trows = [f"<code>{name:<6}{tot[k]['win']:>3}W{tot[k]['loss']:>3}L{tot[k]['be']:>3}BE {tot[k]['usd']:>+9,.2f}$</code>"
-             for name, k in (("Today", "day"), ("Week", "week"), ("Month", "month"))]
-    return ("\n\n".join(blocks) + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(trows) +
+    return ("\n\n".join(blocks) + tf_txt + f"\n\n💼 <b>Total · المجموع</b> (in $)\n" + "\n".join(usd_rows(tot)) +
             "\n<i>W ربح · L خسارة · BE طلعت على الدخول (0$)</i>")
 
-def msg_close(sub, stats, n_signals, weekly, lines_i):
+def today_line(sub, ledger, ref_ts):
+    """One line: what we did today, all chosen instruments and timeframes together."""
+    syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
+    d = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)["day"]
+    icon = "🟢" if d["usd"] > 0 else "🔴" if d["usd"] < 0 else "⚪️"
+    return (f"{icon} <b>Today · اليوم</b>  {d['win']}W · {d['loss']}L · {d['be']}BE  ·  <b>{d['usd']:+,.2f}$</b>")
+
+def msg_close(sub, stats, n_signals, weekly, lines_i, today=""):
     en, ar = CLOSE_LINES[lines_i % len(CLOSE_LINES)]
     head = "🌙 <b>WEEK CLOSED</b> · سكّر السوق للأسبوع" if weekly else "🌙 <b>MARKET CLOSED</b> · سكّر السوق"
-    return (f"{head}\n{LINE}\n📨 Signals today: <b>{n_signals}</b>\n\n" + stats +
+    return (f"{head}\n{LINE}\n📨 Signals today: <b>{n_signals}</b>\n" + (today + "\n" if today else "") + "\n" + stats +
             f"\n\n<i>Lot {sub['lot']:g} · estimates from each plan's target and stop.</i>\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
@@ -600,7 +710,8 @@ def msg_report(sub, stats, title="REPORT"):
             f"<i>التقديرات مبنية على هدف ووقف كل خطة وليست كشف حسابك لدى الوسيط.</i>" + footer())
 
 HELP = (f"🔥 <b>PHOENIX HAZ SMC</b>\n{LINE}\n/start · choose instruments and timeframes\n/price · prices now\n"
-        "/status · what you receive\n/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n/stop · pause all signals\n\n" + SIGN)
+        "/status · what you receive\n/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n"
+        "/lang en · English only (/lang ar · Arabic + English)\n/stop · pause all signals\n\n" + SIGN)
 
 def msg_dayend(o, r, gain_pips):
     s = "+" if r >= 0 else "−"
@@ -608,18 +719,50 @@ def msg_dayend(o, r, gain_pips):
             f"{html.escape(short(o))}" + footer())
 
 BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Prices now"), ("report", "Today, week, month"),
-                ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("stop", "Pause all signals"), ("help", "Help")]
+                ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("lang", "English only / Arabic + English"),
+                ("stop", "Pause all signals"), ("help", "Help")]
 BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, Silver, Dow, Nasdaq and Oil: price now, entry, stop, "
                    "target and live follow-up. Morning brief and market-close summary.\n"
                    "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
                    "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
 
+# ── English-only messages (/lang en): the Arabic half of every message is removed
+AR = re.compile(r"[؀-ۿ]")
+AR_PART = re.compile(r"\s*[·—]\s*[^·—<\n]*[؀-ۿ][^·—<\n]*")
+
+def to_en(text):
+    out = []
+    for line in text.split("\n"):
+        if AR.search(line):
+            line = AR_PART.sub("", line)                 # "English · عربي" -> "English"
+            if AR.search(line):
+                continue                                 # a line that is Arabic only
+        out.append(line)
+    t = "\n".join(out)
+    while "\n\n\n" in t:
+        t = t.replace("\n\n\n", "\n\n")
+    return t.strip()
+
+def msg_lang(sub):
+    if sub.get("lang") == "en":
+        return "🌐 Messages are now in <b>English</b> only. Send /lang ar for Arabic + English."
+    return "🌐 الرسائل صارت <b>عربي + English</b>. للإنكليزي بس ابعت /lang en"
+
 # ───────────────────────────── telegram ─────────────────────────────
 class Telegram:
     def __init__(self, token, channel, dry=False):
         self.token, self.channel, self.dry = token, channel, dry
         self.last_chat, self.last_any, self.fake_id = {}, 0.0, 1000
+        self.lang_of = None                      # set by the engine: chat id -> "en" or "ar"
+
+    def _lang(self, chat, text):
+        try:
+            if self.lang_of and self.lang_of(chat) == "en":
+                return to_en(text).replace(EN_MARK, "")
+            return "\n".join(x for x in text.split("\n") if EN_MARK not in x)
+        except Exception:
+            return text
 
     @staticmethod
     def _is_group(chat):
@@ -676,6 +819,21 @@ class Telegram:
 
     def send(self, text, chat=None, reply_to=None, markup=None):
         chat = chat if chat is not None else self.channel
+        text = self._lang(chat, text)
+        if len(text) > 4000:                          # Telegram refuses messages over 4096 characters: send in parts
+            parts, cur = [], ""
+            for para in text.split("\n\n"):
+                if cur and len(cur) + len(para) + 2 > 4000:
+                    parts.append(cur); cur = para
+                else:
+                    cur = cur + "\n\n" + para if cur else para
+            parts.append(cur)
+            first = None
+            for i, part in enumerate(parts):
+                mid = self.send(part[:4096], chat=chat, reply_to=reply_to if i == 0 else None,
+                                markup=markup if i == len(parts) - 1 else None)
+                first = first or mid
+            return first
         if self.dry:
             self.fake_id += 1
             print(f"\n[DRY-RUN] send #{self.fake_id} to {chat}" + (f" (reply to #{reply_to})" if reply_to else "") + f"\n{text}\n")
@@ -689,6 +847,7 @@ class Telegram:
         return res["message_id"] if res else None
 
     def edit(self, chat, msg_id, text, markup=None):
+        text = self._lang(chat, text)
         if self.dry:
             print(f"\n[DRY-RUN] edit #{msg_id} in {chat}\n{text}\n"); return
         p = {"chat_id": chat, "message_id": msg_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -900,6 +1059,8 @@ class Engine:
         self.stats = {"built": 0, "rr_skip": 0, "dist_skip": 0, "unreal": 0, "capped": 0, "cool": 0, "spike": 0, "why": {}}
         self.load()
         self.meta.setdefault("feed", provider())
+        if tg is not None:
+            tg.lang_of = lambda chat: self.subs.get(str(chat), {}).get("lang", "ar")
 
     # ── state
     def load(self):
@@ -1241,6 +1402,10 @@ class Engine:
                 self.tg.send("Write it like this: <code>/lot 0.1</code>", chat=cid)
         elif cmd == "/report":
             self.send_report(cid, sub)
+        elif cmd == "/lang":
+            a = arg.strip().lower()
+            sub["lang"] = "en" if a.startswith("en") else "ar" if a.startswith("ar") else ("ar" if sub.get("lang") == "en" else "en")
+            self.tg.send(msg_lang(sub), chat=cid)
         elif cmd == "/stop":
             sub["syms"], sub["tfs"] = [], []
             self.tg.send("Signals stopped. Send /start any time to choose again.\nتم إيقاف الإشارات. أرسل /start لتختار من جديد.", chat=cid)
@@ -1265,6 +1430,9 @@ class Engine:
             sub["syms"], sub["tfs"] = [], []
         elif data == "rep":
             self.send_report(cid, sub)
+        elif data == "lang":
+            sub["lang"] = "ar" if sub.get("lang") == "en" else "en"
+            self.tg.send(msg_lang(sub), chat=cid)
         elif data in ("cal", "cx") or data.startswith("c:"):
             self.tg.answer(cq["id"])
             if not self.is_owner(cid):
@@ -1328,7 +1496,7 @@ class Engine:
             n_sig = self.sent.get(key, 0)
             ref = ny.replace(hour=12, minute=0, second=0).timestamp()   # midday NY = the Beirut day that is closing
             self._broadcast_daily(lambda sub: msg_close(sub, stats_text(sub, self.ledger, ref),
-                                                        n_sig, weekly, i))
+                                                        n_sig, weekly, i, today_line(sub, self.ledger, ref)))
             self.save()
 
 # ───────────────────────────── live loop ─────────────────────────────
@@ -1589,3 +1757,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
