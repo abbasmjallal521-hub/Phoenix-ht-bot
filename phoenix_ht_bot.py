@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v21)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v24)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -9,9 +9,12 @@ plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and post
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
 
-v21 (same as indicator v14, tested on real 1-minute prices; backtests saved in Google Drive):
-  tested settings for every instrument and timeframe (PROFILES) · no trading costs by default
-  (COMMISSION_PER_LOT / SPREAD settings, 0 = none) · 1m off · no daily signal limit per pair (like the indicator).
+v24 (same as indicator v17, tested on one year of real 1-minute prices with no spread; backtests in Google Drive):
+  the target is never smaller than the stop (MIN_RR 1) · earlier trade protection: at 10% of the way to the target
+  the stop moves to entry, at 20% it locks 5% of the target, at 50% it locks 30% · new tested settings (PROFILES)
+  for every instrument and timeframe (stop, target, limit orders, mixed-trend breakouts, trading hours in New York
+  time), so that 70-80% of the trades that close in profit or loss are wins (trades closed at entry are not
+  counted) · no daily lock and no limit on the number of signals · no trading costs by default · 1m off.
 
 DISCLAIMER: educational use only, not financial advice. Trading on margin or CFDs
 is high risk. Prices come from a data feed and can differ from your broker.
@@ -98,37 +101,38 @@ RR = {"1m": parse_rr(ENV("RR_1M", "1"), [1.0]),
 # tested settings for every instrument and timeframe (USE_PROFILES=0 = use the plain settings above instead)
 #   on = signals on this timeframe · sl = stop distance in ATR (+ the sweep buffer) · rr = target (reward:risk)
 #   limits = reversal limit orders · mixed = breakouts when the higher timeframes are mixed
+#   start / end = trading hours, New York time (no new orders outside them)
 USE_PROFILES = ENV("USE_PROFILES", "1") == "1"
 PROFILES = {
     "XAUUSD": {
-        "5m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True),
-        "15m": dict(on=True, sl=0.8, rr=[1.5], limits=True, mixed=True),
-        "30m": dict(on=True, sl=0.8, rr=[1.5], limits=False, mixed=True),
-        "1h": dict(on=True, sl=0.7, rr=[2], limits=True, mixed=True),
+        "5m": dict(on=True, sl=2, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
+        "15m": dict(on=True, sl=2.5, rr=[1.2], limits=False, mixed=True, start="01:30", end="24:00"),
+        "30m": dict(on=True, sl=2.5, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
+        "1h": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
     },
     "XAGUSD": {
-        "5m": dict(on=False, sl=1, rr=[1], limits=False, mixed=True),
-        "15m": dict(on=True, sl=1.3, rr=[3], limits=True, mixed=True),
-        "30m": dict(on=True, sl=0.8, rr=[1.5], limits=False, mixed=True),
-        "1h": dict(on=False, sl=0.7, rr=[2], limits=False, mixed=False),
+        "5m": dict(on=True, sl=2, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
+        "15m": dict(on=True, sl=1.6, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
+        "1h": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
     },
     "US30": {
-        "5m": dict(on=True, sl=1, rr=[1.5], limits=False, mixed=True),
-        "15m": dict(on=True, sl=1, rr=[3], limits=True, mixed=True),
-        "30m": dict(on=True, sl=0.8, rr=[3], limits=True, mixed=True),
-        "1h": dict(on=True, sl=0.7, rr=[4], limits=True, mixed=False),
+        "5m": dict(on=True, sl=1.6, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "15m": dict(on=True, sl=2, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=2, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
+        "1h": dict(on=True, sl=1.6, rr=[1], limits=True, mixed=False, start="01:30", end="17:00"),
     },
     "NAS100": {
-        "5m": dict(on=True, sl=0.8, rr=[1], limits=False, mixed=True),
-        "15m": dict(on=True, sl=1, rr=[2], limits=False, mixed=True),
-        "30m": dict(on=True, sl=0.7, rr=[1.5], limits=False, mixed=False),
-        "1h": dict(on=True, sl=1, rr=[2], limits=True, mixed=True),
+        "5m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "15m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
+        "1h": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=False, start="01:30", end="21:30"),
     },
     "USOIL": {
-        "5m": dict(on=True, sl=0.8, rr=[1], limits=False, mixed=True),
-        "15m": dict(on=True, sl=0.8, rr=[1.5], limits=True, mixed=True),
-        "30m": dict(on=True, sl=0.8, rr=[3], limits=False, mixed=False),
-        "1h": dict(on=True, sl=0.8, rr=[2], limits=True, mixed=True),
+        "5m": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "15m": dict(on=True, sl=1.6, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "1h": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
     },
 }
 
@@ -140,12 +144,12 @@ MOVE_PER_BAR = float(ENV("MOVE_PER_BAR", "0.5"))     # net ATR price travels per
 MAX_HOLD_HOURS = float(ENV("MAX_HOLD_HOURS", "24"))   # the last target must be reachable within this many hours
 
 # quality rules (fewer stop-outs)
-# trade protection in 3 steps (same as the indicator v12), shares of the way to the target:
-BE_AT_R = float(ENV("BE_AT_R", "0.5"))               # step 1: at 50% the stop moves to entry (0 = off)
-LOCK1_AT = float(ENV("LOCK1_AT", "0.7"))             # step 2: at 70% ...
-LOCK1_TO = float(ENV("LOCK1_TO", "0.5"))             # ... the stop moves to 50% of the target (profit locked)
-LOCK2_AT = float(ENV("LOCK2_AT", "0.8"))             # step 3: at 80% ...
-LOCK2_TO = float(ENV("LOCK2_TO", "0.7"))             # ... the stop moves to 70% of the target
+# trade protection in 3 steps (same as the indicator v17), shares of the way to the target:
+BE_AT_R = float(ENV("BE_AT_R", "0.1"))               # step 1: at 10% the stop moves to entry (0 = off)
+LOCK1_AT = float(ENV("LOCK1_AT", "0.2"))             # step 2: at 20% ...
+LOCK1_TO = float(ENV("LOCK1_TO", "0.05"))            # ... the stop moves to 5% of the target (profit locked)
+LOCK2_AT = float(ENV("LOCK2_AT", "0.5"))             # step 3: at 50% ...
+LOCK2_TO = float(ENV("LOCK2_TO", "0.3"))             # ... the stop moves to 30% of the target
 LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))   # lot used for the $ shown in the lock message
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
@@ -170,10 +174,10 @@ PLAN_START = hm(ENV("PLAN_START", "01:30"))
 PLAN_END = hm(ENV("PLAN_END", "21:30"))
 
 SHOW_COUNTER = ENV("SHOW_COUNTER", "0") == "1"
-MIN_RR = float(ENV("MIN_RR", "1.0"))   # never post an order whose stop is bigger than its target
+MIN_RR = float(ENV("MIN_RR", "1.0"))   # never post an order whose target is smaller than its stop
 SEND_UPDATES = ENV("SEND_UPDATES", "1") == "1"
 MAX_PER_PAIR_DAY = int(ENV("MAX_PER_PAIR_DAY", "0"))        # new signals per symbol+timeframe per day (0 = no limit, like the indicator)
-MAX_SIGNALS_PER_DAY = int(ENV("MAX_SIGNALS_PER_DAY", "400"))  # safety limit per day, all symbols together (0 = no limit)
+MAX_SIGNALS_PER_DAY = int(ENV("MAX_SIGNALS_PER_DAY", "0"))    # limit per day, all symbols together (0 = no limit)
 
 PENDING, OPEN, TP_HIT, SL_HIT, DAY_END, BE_HIT, LOCK_HIT, CANCELLED = 0, 1, 2, 3, 4, 5, 6, 9
 STICKY_MAX_ATR = float(ENV("STICKY_MAX_ATR", "8"))      # an unfilled order stays while price is within this many ATR of it
@@ -242,11 +246,14 @@ def cost_price(sym):
 
 def plan_params(sym, tf):
     """Settings for this instrument and timeframe: the tested profile, or the plain settings."""
-    p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True)
+    p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True, start=PLAN_START, end=PLAN_END)
     if USE_PROFILES:
         p.update(PROFILES.get(sym, {}).get(tf, {}))
     if not isinstance(p["rr"], (list, tuple)):
         p["rr"] = [float(p["rr"])]
+    for k in ("start", "end"):                      # "03:00" -> minutes after midnight (New York)
+        if isinstance(p[k], str):
+            p[k] = hm(p[k])
     return p
 
 def build_orders(atr, hi, lo, close, bias, tick, rrs, ema_dir=0, mom_dir=0, fake_up=False, fake_dn=False,
@@ -522,7 +529,7 @@ JOKES_SAFE_EN = [
     "The stop moved up, the stress moved out 😮‍💨",
 ]
 JN = 0
-EN_MARK = "⁣"                                     # invisible mark: this line is for English-only readers
+EN_MARK = "\u2063"                                     # invisible mark: this line is for English-only readers
 
 def joke(pool, pool_en=None):
     """Next joke (rotates, saved with the state): the Arabic one, plus an English one that only
@@ -722,7 +729,7 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 50%, lock half the target at 70%, lock 70% at 80%.\n\n"
+            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 10% of the way, lock 5% at 20%, lock 30% at 50%.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
@@ -800,8 +807,8 @@ BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, S
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
 
 # ── English-only messages (/lang en): the Arabic half of every message is removed
-AR = re.compile(r"[؀-ۿ]")
-AR_PART = re.compile(r"\s*[·—]\s*[^·—<\n]*[؀-ۿ][^·—<\n]*")
+AR = re.compile(r"[\u0600-\u06FF]")
+AR_PART = re.compile(r"\s*[·—]\s*[^·—<\n]*[\u0600-\u06FF][^·—<\n]*")
 
 def to_en(text):
     out = []
@@ -1220,8 +1227,8 @@ class Engine:
         self.stats["why"][text] = self.stats["why"].get(text, 0) + 1
 
     def book(self, o, bar, exit_px=None):
-        self.ledger.append({"t": bar.t, "td": trading_day(bar.t).isoformat(), "sym": o["sym"], "tf": o["tf"],
-                            "dist": realized(o, exit_px), "cost": cost_price(o["sym"])})
+        dist, cost, td = realized(o, exit_px), cost_price(o["sym"]), trading_day(bar.t).isoformat()
+        self.ledger.append({"t": bar.t, "td": td, "sym": o["sym"], "tf": o["tf"], "dist": dist, "cost": cost})
         cutoff = bar.t - 100 * 86400
         self.ledger = [e for e in self.ledger if e["t"] > cutoff]
 
@@ -1313,9 +1320,9 @@ class Engine:
         #    so when the market comes back to test the same zone the order is still there.
         atr = calc_atr(bars)
         pp = plan_params(sym, tf)
-        in_win = pp["on"] and PLAN_START <= mins < PLAN_END
+        in_win = pp["on"] and pp["start"] <= mins < pp["end"]          # trading hours of this instrument + timeframe
         eff = max(REFRESH_MIN, TF_SEC[tf] / 60.0)
-        slot = int((mins - PLAN_START) // eff) if in_win else -1
+        slot = int((mins - pp["start"]) // eff) if in_win else -1
         spike = bool(atr) and (bar.h - bar.l) > SPIKE_ATR * atr
         if spike and is_latest and in_win:
             self.stats["spike"] += 1                                # news-size candle: wait for the next bar
@@ -1834,4 +1841,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
