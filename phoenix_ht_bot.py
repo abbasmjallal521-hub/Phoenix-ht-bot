@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v19)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v21)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v21 (same as indicator v14, tested on real 1-minute prices; backtests saved in Google Drive):
+  tested settings for every instrument and timeframe (PROFILES) · no trading costs by default
+  (COMMISSION_PER_LOT / SPREAD settings, 0 = none) · 1m off · no daily signal limit per pair (like the indicator).
 
 DISCLAIMER: educational use only, not financial advice. Trading on margin or CFDs
 is high risk. Prices come from a data feed and can differ from your broker.
@@ -52,9 +56,16 @@ INSTRUMENTS = {
     "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "ref": "^NDX", "oanda": "NAS100_USD", "capital": "US100", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
     "USOIL":  {"name": "WTI Oil",    "yahoo": "CL=F", "oanda": "WTICO_USD",  "capital": "OIL_CRUDE",  "digits": 2, "tick": 0.01, "pip": 0.01, "contract": 1000},
 }
+# trading costs taken off every closed trade in the reports (default 0 = none):
+#   commission per 1 lot, round turn, in $, and the spread in price.
+#   Set them for everybody with COMMISSION_PER_LOT / SPREAD, or per instrument: COMMISSION_XAUUSD=7, SPREAD_US30=2
+COMMISSION_PER_LOT = float(ENV("COMMISSION_PER_LOT", "0"))
+SPREAD_ALL = float(ENV("SPREAD", "0"))
 for _s, _i in INSTRUMENTS.items():              # override a pip size with PIP_XAUUSD=0.1 etc.
     if ENV("PIP_" + _s):
         _i["pip"] = float(ENV("PIP_" + _s))
+    _i["commission"] = float(ENV("COMMISSION_" + _s, str(COMMISSION_PER_LOT)))
+    _i["spread"] = float(ENV("SPREAD_" + _s, str(SPREAD_ALL)))
     if ENV("EPIC_" + _s):                           # Capital.com market name, e.g. EPIC_USOIL=OIL_CRUDE
         _i["capital"] = ENV("EPIC_" + _s).strip()
     if ENV("CONTRACT_" + _s):                       # units per 1 lot at your broker (money maths)
@@ -65,6 +76,7 @@ TF_SEC = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}
 RANGE_BARS = int(ENV("RANGE_BARS", "24"))
 SPREAD_PCT, EARLY_PCT = 15.0, 10.0
 SL_MULT = float(ENV("SL_MULT", "1.0"))
+ALLOW_1M = ENV("ALLOW_1M", "0") == "1"           # 1m is off: on real prices it lost after costs on every instrument
 REFRESH_MIN = int(ENV("REFRESH_MIN", "20"))      # how often a plan is refreshed and unfilled orders re-checked (minutes)
 MAX_DIST_ATR = float(ENV("MAX_DIST_ATR", "3"))   # only post orders within this many ATR of price
 DEDUP_ATR = float(ENV("DEDUP_ATR", "0.5"))       # keep the old order if the new one is this close
@@ -83,6 +95,43 @@ RR = {"1m": parse_rr(ENV("RR_1M", "1"), [1.0]),
       "30m": parse_rr(ENV("RR_30M", "2"), [2.0]),
       "1h": parse_rr(ENV("RR_1H", "3"), [3.0])}      # ONE target per trade, set by timeframe (write "1,2" for two)
 
+# tested settings for every instrument and timeframe (USE_PROFILES=0 = use the plain settings above instead)
+#   on = signals on this timeframe · sl = stop distance in ATR (+ the sweep buffer) · rr = target (reward:risk)
+#   limits = reversal limit orders · mixed = breakouts when the higher timeframes are mixed
+USE_PROFILES = ENV("USE_PROFILES", "1") == "1"
+PROFILES = {
+    "XAUUSD": {
+        "5m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True),
+        "15m": dict(on=True, sl=0.8, rr=[1.5], limits=True, mixed=True),
+        "30m": dict(on=True, sl=0.8, rr=[1.5], limits=False, mixed=True),
+        "1h": dict(on=True, sl=0.7, rr=[2], limits=True, mixed=True),
+    },
+    "XAGUSD": {
+        "5m": dict(on=False, sl=1, rr=[1], limits=False, mixed=True),
+        "15m": dict(on=True, sl=1.3, rr=[3], limits=True, mixed=True),
+        "30m": dict(on=True, sl=0.8, rr=[1.5], limits=False, mixed=True),
+        "1h": dict(on=False, sl=0.7, rr=[2], limits=False, mixed=False),
+    },
+    "US30": {
+        "5m": dict(on=True, sl=1, rr=[1.5], limits=False, mixed=True),
+        "15m": dict(on=True, sl=1, rr=[3], limits=True, mixed=True),
+        "30m": dict(on=True, sl=0.8, rr=[3], limits=True, mixed=True),
+        "1h": dict(on=True, sl=0.7, rr=[4], limits=True, mixed=False),
+    },
+    "NAS100": {
+        "5m": dict(on=True, sl=0.8, rr=[1], limits=False, mixed=True),
+        "15m": dict(on=True, sl=1, rr=[2], limits=False, mixed=True),
+        "30m": dict(on=True, sl=0.7, rr=[1.5], limits=False, mixed=False),
+        "1h": dict(on=True, sl=1, rr=[2], limits=True, mixed=True),
+    },
+    "USOIL": {
+        "5m": dict(on=True, sl=0.8, rr=[1], limits=False, mixed=True),
+        "15m": dict(on=True, sl=0.8, rr=[1.5], limits=True, mixed=True),
+        "30m": dict(on=True, sl=0.8, rr=[3], limits=False, mixed=False),
+        "1h": dict(on=True, sl=0.8, rr=[2], limits=True, mixed=True),
+    },
+}
+
 # filters that remove orders that look unrealistic
 MIN_RISK_ATR = float(ENV("MIN_RISK_ATR", "0.5"))     # stop must be at least this many ATR
 MAX_TP_ATR = float(ENV("MAX_TP_ATR", "8"))           # farthest target within this many ATR
@@ -100,7 +149,7 @@ LOCK2_TO = float(ENV("LOCK2_TO", "0.7"))             # ... the stop moves to 70%
 LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))   # lot used for the $ shown in the lock message
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
-NEUTRAL_FADE = ENV("NEUTRAL_FADE", "1") == "1"       # mixed trend: only reversal (limit) orders, no breakouts
+NEUTRAL_FADE = ENV("NEUTRAL_FADE", "0") == "1"       # mixed trend: also reversal (limit) orders (off: they lost the most)
 SWEEP_BUFFER = float(ENV("SWEEP_BUFFER_ATR", "0.25"))   # extra stop room (ATR) so a quick stop-hunt wick does not take the trade out
 FAKE_BREAK_BARS = int(ENV("FAKE_BREAK_BARS", "6"))      # a wick beyond the range that closes back inside within this many bars = fake breakout
 DAY_START_HOUR = int(ENV("DAY_START_HOUR", "0"))        # totals reset at this hour of DAY_TIMEZONE (0 = midnight)
@@ -123,8 +172,8 @@ PLAN_END = hm(ENV("PLAN_END", "21:30"))
 SHOW_COUNTER = ENV("SHOW_COUNTER", "0") == "1"
 MIN_RR = float(ENV("MIN_RR", "1.0"))   # never post an order whose stop is bigger than its target
 SEND_UPDATES = ENV("SEND_UPDATES", "1") == "1"
-MAX_PER_PAIR_DAY = int(ENV("MAX_PER_PAIR_DAY", "6"))        # new signals per symbol+timeframe per day
-MAX_SIGNALS_PER_DAY = int(ENV("MAX_SIGNALS_PER_DAY", "100"))  # new signals per day, all symbols together
+MAX_PER_PAIR_DAY = int(ENV("MAX_PER_PAIR_DAY", "0"))        # new signals per symbol+timeframe per day (0 = no limit, like the indicator)
+MAX_SIGNALS_PER_DAY = int(ENV("MAX_SIGNALS_PER_DAY", "400"))  # safety limit per day, all symbols together (0 = no limit)
 
 PENDING, OPEN, TP_HIT, SL_HIT, DAY_END, BE_HIT, LOCK_HIT, CANCELLED = 0, 1, 2, 3, 4, 5, 6, 9
 STICKY_MAX_ATR = float(ENV("STICKY_MAX_ATR", "8"))      # an unfilled order stays while price is within this many ATR of it
@@ -186,12 +235,27 @@ def ny_parts(ts):
     return dt.hour * 60 + dt.minute, dt.strftime("%Y-%m-%d")
 
 # ───────────────────────────── plan logic (mirrors the indicator) ─────────────────────────────
-def build_orders(atr, hi, lo, close, bias, tick, rrs, ema_dir=0, mom_dir=0, fake_up=False, fake_dn=False):
+def cost_price(sym):
+    """Cost of one trade in price units: spread + commission per lot / contract size (e.g. gold 7 / 100 = 0.07)."""
+    i = INSTRUMENTS[sym]
+    return i.get("spread", 0.0) + i.get("commission", 0.0) / max(i["contract"], 1e-9)
+
+def plan_params(sym, tf):
+    """Settings for this instrument and timeframe: the tested profile, or the plain settings."""
+    p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True)
+    if USE_PROFILES:
+        p.update(PROFILES.get(sym, {}).get(tf, {}))
+    if not isinstance(p["rr"], (list, tuple)):
+        p["rr"] = [float(p["rr"])]
+    return p
+
+def build_orders(atr, hi, lo, close, bias, tick, rrs, ema_dir=0, mom_dir=0, fake_up=False, fake_dn=False,
+                 sl_mult=None, limits=True, mixed=True):
     """Entry / stop come from the range and ATR. The target = R x stop distance (R set by timeframe).
     Direction must agree with the higher timeframes AND with what the chart timeframe is doing now."""
     sp = max(atr * SPREAD_PCT / 100.0, tick)
     early = min(atr * EARLY_PCT / 100.0, sp)
-    slD = atr * (SL_MULT + SWEEP_BUFFER)
+    slD = atr * ((SL_MULT if sl_mult is None else sl_mult) + SWEEP_BUFFER)
     out = []
 
     def allowed(d, is_stop):
@@ -201,7 +265,7 @@ def build_orders(atr, hi, lo, close, bias, tick, rrs, ema_dir=0, mom_dir=0, fake
             return True
         if bias == 0:                               # mixed higher timeframes
             strong = ema_dir == d and mom_dir == d  # ...but the chart itself is clearly running this way: take the breakout
-            return strong or ((not is_stop) and NEUTRAL_FADE)
+            return (strong and mixed) or ((not is_stop) and NEUTRAL_FADE)
         return SHOW_COUNTER
 
     def mk(direction, kind, is_stop, lvl, sl, inval):
@@ -218,10 +282,10 @@ def build_orders(atr, hi, lo, close, bias, tick, rrs, ema_dir=0, mom_dir=0, fake
     if allowed(-1, True) and not fake_dn:
         mk(-1, "SELL STOP", True, lo - sp + early, lo + slD, hi)
     lvl = hi - sp - early
-    if close < lvl - sp and allowed(-1, False):
+    if limits and close < lvl - sp and allowed(-1, False):
         mk(-1, "SELL LIMIT", False, lvl, hi + slD, hi + slD)
     lvl = lo + sp + early
-    if close > lvl + sp and allowed(1, False):
+    if limits and close > lvl + sp and allowed(1, False):
         mk(1, "BUY LIMIT", False, lvl, lo - slD, lo - slD)
     return out
 
@@ -269,7 +333,8 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
         if e["sym"] not in syms or e["tf"] not in tfs:
             continue
         d = date.fromisoformat(e["td"])
-        pp, uu = e["dist"] / INSTRUMENTS[e["sym"]]["pip"], money(e["sym"], e["dist"], lot)
+        net = e["dist"] - e.get("cost", e.get("sp", 0.0))       # after the trading cost (commission + spread)
+        pp, uu = net / INSTRUMENTS[e["sym"]]["pip"], money(e["sym"], net, lot)
         for key, same in (("day", d == td), ("week", d.isocalendar()[:2] == wk), ("month", (d.year, d.month) == mo)):
             if same:
                 o = out[key]; o["pips"] += pp; o["usd"] += uu
@@ -664,7 +729,7 @@ def stats_text(sub, ledger, ref_ts):
     """Every instrument with every timeframe (Gold 5M, Gold 15M ...), then each timeframe for all
     instruments together, then the total. Money in $ (pips of different instruments can not be added)."""
     syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
-    tfs = [t for t in TF_SEC if t in sub["tfs"]]
+    tfs = [t for t in TF_SEC if t in sub["tfs"] and t in AVAILABLE_TFS]
     has = lambda sm: any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month"))
 
     def usd_rows(sm):                         # narrow rows: fit a phone screen without wrapping
@@ -694,12 +759,12 @@ def stats_text(sub, ledger, ref_ts):
     tf_txt = ("\n\n📐 <b>By timeframe · حسب الفريم</b> (all instruments)\n" + "\n\n".join(tf_blocks)) if tf_blocks else ""
     tot = summarize(ledger, syms, tfs, sub["lot"], ref_ts)
     return ("\n\n".join(blocks) + tf_txt + f"\n\n💼 <b>Total · المجموع</b>\n" + "\n".join(usd_rows(tot)) +
-            "\n<i>W ربح · L خسارة · BE طلعت على الدخول (0$)</i>")
+            "\n<i>W ربح · L خسارة · BE طلعت على الدخول</i>")
 
 def today_line(sub, ledger, ref_ts):
     """One line: what we did today, all chosen instruments and timeframes together."""
     syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
-    d = summarize(ledger, syms, sub["tfs"], sub["lot"], ref_ts)["day"]
+    d = summarize(ledger, syms, [t for t in sub["tfs"] if t in AVAILABLE_TFS], sub["lot"], ref_ts)["day"]
     icon = "🟢" if d["usd"] > 0 else "🔴" if d["usd"] < 0 else "⚪️"
     return (f"{icon} <b>Today · اليوم</b>  {d['win']}W · {d['loss']}L · {d['be']}BE  ·  <b>{d['usd']:+,.2f}$</b>")
 
@@ -1156,7 +1221,7 @@ class Engine:
 
     def book(self, o, bar, exit_px=None):
         self.ledger.append({"t": bar.t, "td": trading_day(bar.t).isoformat(), "sym": o["sym"], "tf": o["tf"],
-                            "dist": realized(o, exit_px)})
+                            "dist": realized(o, exit_px), "cost": cost_price(o["sym"])})
         cutoff = bar.t - 100 * 86400
         self.ledger = [e for e in self.ledger if e["t"] > cutoff]
 
@@ -1247,7 +1312,8 @@ class Engine:
         # 3) re-check ONLY the unfilled orders. A pending order stays while its zone is still valid,
         #    so when the market comes back to test the same zone the order is still there.
         atr = calc_atr(bars)
-        in_win = PLAN_START <= mins < PLAN_END
+        pp = plan_params(sym, tf)
+        in_win = pp["on"] and PLAN_START <= mins < PLAN_END
         eff = max(REFRESH_MIN, TF_SEC[tf] / 60.0)
         slot = int((mins - PLAN_START) // eff) if in_win else -1
         spike = bool(atr) and (bar.h - bar.l) > SPIKE_ATR * atr
@@ -1278,7 +1344,8 @@ class Engine:
             hi, lo = max(b.h for b in win), min(b.l for b in win)
             if hi - lo >= atr and self.bc.targets(sym, tf):
                 fake_up, fake_dn = sweep_flags(bars)
-                built = build_orders(atr, hi, lo, bar.c, bias_info["now"], tick, RR[tf], ema_dir, mom_dir, fake_up, fake_dn)
+                built = build_orders(atr, hi, lo, bar.c, bias_info["now"], tick, pp["rr"], ema_dir, mom_dir, fake_up, fake_dn,
+                                     sl_mult=pp["sl"], limits=pp["limits"], mixed=pp["mixed"])
                 lean = mom_dir or ema_dir or bias_info["now"]
                 keep = []
                 for n in built:                                     # a buy and a sell in the SAME area: keep only one
@@ -1307,7 +1374,8 @@ class Engine:
                 if add:
                     ps["seq"] += 1
                     for n in add:
-                        if ps.get("sent", 0) >= MAX_PER_PAIR_DAY or self.sent.get(day, 0) >= MAX_SIGNALS_PER_DAY:
+                        if (MAX_PER_PAIR_DAY and ps.get("sent", 0) >= MAX_PER_PAIR_DAY) or \
+                                (MAX_SIGNALS_PER_DAY and self.sent.get(day, 0) >= MAX_SIGNALS_PER_DAY):
                             self.stats["capped"] += 1
                             continue
                         n.update(sym=sym, tf=tf, plan=f"{sym}{tf}{ps['seq']}", state=PENDING, born_t=bar.t, fill_t=0,
@@ -1755,7 +1823,9 @@ def main():
     if requests is None:
         sys.exit("Please run: pip install -r requirements.txt")
     syms = [x.strip().upper() for x in ENV("SYMBOLS", ",".join(INSTRUMENTS)).split(",") if x.strip().upper() in INSTRUMENTS]
-    tfs = [t.strip().lower() for t in ENV("TIMEFRAMES", "1m,5m,15m,30m,1h").split(",") if t.strip().lower() in TF_SEC]
+    tfs = [t.strip().lower() for t in ENV("TIMEFRAMES", "5m,15m,30m,1h").split(",") if t.strip().lower() in TF_SEC]
+    if not ALLOW_1M:
+        tfs = [t for t in tfs if t != "1m"] or ["5m", "15m", "30m", "1h"]
     AVAILABLE_SYMS, AVAILABLE_TFS = syms, tfs
     token, chat = clean_token(ENV("TELEGRAM_BOT_TOKEN", "")), clean_chat(ENV("TELEGRAM_CHAT_ID", ""))
     if not a.dry_run and not token:
