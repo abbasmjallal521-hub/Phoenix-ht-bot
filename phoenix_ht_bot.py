@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v24)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v25)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
@@ -9,12 +9,14 @@ plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and post
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
 
-v24 (same as indicator v17, tested on one year of real 1-minute prices with no spread; backtests in Google Drive):
-  the target is never smaller than the stop (MIN_RR 1) · earlier trade protection: at 10% of the way to the target
-  the stop moves to entry, at 20% it locks 5% of the target, at 50% it locks 30% · new tested settings (PROFILES)
-  for every instrument and timeframe (stop, target, limit orders, mixed-trend breakouts, trading hours in New York
-  time), so that 70-80% of the trades that close in profit or loss are wins (trades closed at entry are not
-  counted) · no daily lock and no limit on the number of signals · no trading costs by default · 1m off.
+v25 (same as indicator v18 and the MetaTrader 5 EA v2; made for the OneRoyal ECN account; backtests in Google Drive):
+  new tested settings (PROFILES) for every instrument and timeframe, tested on one year of real 1-minute prices WITH the
+  ECN costs of the account (commission, spread and swaps); targets from 1:1 up to 1:3, never smaller than the stop ·
+  protection 10/20/50 with break-even after costs (the protected stop also covers spread + commission) · OneRoyal ECN
+  costs by default (COSTS=none for none) · Dow / Nasdaq: smallest lot 0.1, 1 pip = 1 index point = 10 MT5 points ·
+  tested per instrument and timeframe: the range window, and stacking (one more trade the same way once the open
+  ones are protected) where it made more in both halves of the year · wins / losses / at entry counted after costs ·
+  no daily lock and no limit on the number of signals · 1m off.
 
 DISCLAIMER: educational use only, not financial advice. Trading on margin or CFDs
 is high risk. Prices come from a data feed and can differ from your broker.
@@ -59,16 +61,25 @@ INSTRUMENTS = {
     "NAS100": {"name": "Nasdaq 100", "yahoo": "NQ=F", "ref": "^NDX", "oanda": "NAS100_USD", "capital": "US100", "digits": 1, "tick": 0.1, "pip": 1.0, "contract": 1},
     "USOIL":  {"name": "WTI Oil",    "yahoo": "CL=F", "oanda": "WTICO_USD",  "capital": "OIL_CRUDE",  "digits": 2, "tick": 0.01, "pip": 0.01, "contract": 1000},
 }
-# trading costs taken off every closed trade in the reports (default 0 = none):
-#   commission per 1 lot, round turn, in $, and the spread in price.
-#   Set them for everybody with COMMISSION_PER_LOT / SPREAD, or per instrument: COMMISSION_XAUUSD=7, SPREAD_US30=2
-COMMISSION_PER_LOT = float(ENV("COMMISSION_PER_LOT", "0"))
-SPREAD_ALL = float(ENV("SPREAD", "0"))
+# OneRoyal ECN account (from the account's MT5 specification): commission per lot for the whole trade (charged on the
+# opening deal), a typical raw spread (price), and the smallest lot. 1 pip: gold 0.1, silver 0.01, Dow / Nasdaq 1 index
+# point (= 10 MT5 points, the price has 1 decimal), oil 0.01. Dow / Nasdaq: contract 1 = $1 per point per lot,
+# smallest lot 0.1 = $0.10 per pip.
+ECN_COSTS = {"XAUUSD": (7.0, 0.18, 0.01), "XAGUSD": (7.0, 0.025, 0.01), "US30": (0.7, 2.0, 0.1),
+             "NAS100": (0.7, 1.5, 0.1), "USOIL": (7.0, 0.04, 0.01)}
+# trading costs taken off every closed trade in the reports, and covered by the protected stop (break-even after costs).
+# Default: the OneRoyal ECN costs above (COSTS=none for no costs). Override for everybody with COMMISSION_PER_LOT /
+# SPREAD, or per instrument: COMMISSION_XAUUSD=7, SPREAD_US30=2, MINLOT_US30=0.1
+COSTS = (ENV("COSTS", "oneroyal_ecn") or "").strip().lower()
+COMMISSION_PER_LOT = ENV("COMMISSION_PER_LOT", "")
+SPREAD_ALL = ENV("SPREAD", "")
 for _s, _i in INSTRUMENTS.items():              # override a pip size with PIP_XAUUSD=0.1 etc.
     if ENV("PIP_" + _s):
         _i["pip"] = float(ENV("PIP_" + _s))
-    _i["commission"] = float(ENV("COMMISSION_" + _s, str(COMMISSION_PER_LOT)))
-    _i["spread"] = float(ENV("SPREAD_" + _s, str(SPREAD_ALL)))
+    _c, _sp, _ml = ECN_COSTS[_s] if COSTS == "oneroyal_ecn" else (0.0, 0.0, 0.01)
+    _i["commission"] = float(ENV("COMMISSION_" + _s, COMMISSION_PER_LOT or str(_c)))
+    _i["spread"] = float(ENV("SPREAD_" + _s, SPREAD_ALL or str(_sp)))
+    _i["min_lot"] = float(ENV("MINLOT_" + _s, str(_ml)))
     if ENV("EPIC_" + _s):                           # Capital.com market name, e.g. EPIC_USOIL=OIL_CRUDE
         _i["capital"] = ENV("EPIC_" + _s).strip()
     if ENV("CONTRACT_" + _s):                       # units per 1 lot at your broker (money maths)
@@ -105,34 +116,34 @@ RR = {"1m": parse_rr(ENV("RR_1M", "1"), [1.0]),
 USE_PROFILES = ENV("USE_PROFILES", "1") == "1"
 PROFILES = {
     "XAUUSD": {
-        "5m": dict(on=True, sl=2, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
-        "15m": dict(on=True, sl=2.5, rr=[1.2], limits=False, mixed=True, start="01:30", end="24:00"),
-        "30m": dict(on=True, sl=2.5, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
-        "1h": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
+        "5m": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=True, start="00:00", end="24:00", stack=3),
+        "15m": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=True, start="01:30", end="24:00"),
+        "30m": dict(on=True, sl=1.3, rr=[2], limits=False, mixed=True, start="01:30", end="21:30", range=12),
+        "1h": dict(on=True, sl=1.6, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00", stack=2),
     },
     "XAGUSD": {
-        "5m": dict(on=True, sl=2, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
-        "15m": dict(on=True, sl=1.6, rr=[1], limits=True, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
-        "1h": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=False, start="00:00", end="24:00"),
+        "5m": dict(on=False, sl=4, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", range=48),
+        "15m": dict(on=True, sl=2, rr=[1.5], limits=False, mixed=True, start="08:00", end="24:00"),
+        "30m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="01:30", end="24:00", range=36),
+        "1h": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=False, start="00:00", end="21:30"),
     },
     "US30": {
-        "5m": dict(on=True, sl=1.6, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "15m": dict(on=True, sl=2, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=2, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
-        "1h": dict(on=True, sl=1.6, rr=[1], limits=True, mixed=False, start="01:30", end="17:00"),
+        "5m": dict(on=True, sl=1.3, rr=[1], limits=False, mixed=True, start="01:30", end="17:00", range=48, stack=2),
+        "15m": dict(on=True, sl=1, rr=[2], limits=False, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=1.3, rr=[2.5], limits=True, mixed=True, start="00:00", end="24:00", stack=2),
+        "1h": dict(on=False, sl=1, rr=[1.5], limits=True, mixed=False, start="00:00", end="24:00"),
     },
     "NAS100": {
-        "5m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "15m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
-        "1h": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=False, start="01:30", end="21:30"),
+        "5m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="08:00", end="24:00"),
+        "15m": dict(on=True, sl=3, rr=[1], limits=False, mixed=True, start="01:30", end="24:00"),
+        "30m": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=True, start="01:30", end="24:00", stack=2),
+        "1h": dict(on=True, sl=1.3, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
     },
     "USOIL": {
-        "5m": dict(on=True, sl=2.5, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "15m": dict(on=True, sl=1.6, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
-        "1h": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="00:00", end="24:00"),
+        "5m": dict(on=False, sl=3.5, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
+        "15m": dict(on=False, sl=2.5, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
+        "30m": dict(on=True, sl=1.6, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00", stack=3),
+        "1h": dict(on=True, sl=1.3, rr=[1.5], limits=True, mixed=True, start="00:00", end="17:00"),
     },
 }
 
@@ -144,13 +155,16 @@ MOVE_PER_BAR = float(ENV("MOVE_PER_BAR", "0.5"))     # net ATR price travels per
 MAX_HOLD_HOURS = float(ENV("MAX_HOLD_HOURS", "24"))   # the last target must be reachable within this many hours
 
 # quality rules (fewer stop-outs)
-# trade protection in 3 steps (same as the indicator v17), shares of the way to the target:
+# trade protection in 3 steps (same as the indicator v18 and the EA v2), shares of the way to the target:
 BE_AT_R = float(ENV("BE_AT_R", "0.1"))               # step 1: at 10% the stop moves to entry (0 = off)
 LOCK1_AT = float(ENV("LOCK1_AT", "0.2"))             # step 2: at 20% ...
 LOCK1_TO = float(ENV("LOCK1_TO", "0.05"))            # ... the stop moves to 5% of the target (profit locked)
 LOCK2_AT = float(ENV("LOCK2_AT", "0.5"))             # step 3: at 50% ...
 LOCK2_TO = float(ENV("LOCK2_TO", "0.3"))             # ... the stop moves to 30% of the target
 LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))   # lot used for the $ shown in the lock message
+STACK_SAFE = ENV("STACK_SAFE", "0") == "1"           # plain settings: one more trade the same way once the open one is protected
+STACK_MAX = int(ENV("STACK_MAX", "3"))              # ... up to this many open trades the same way (the tested settings set their own)
+BE_PLUS_COST = ENV("BE_PLUS_COST", "1") == "1"   # with trading costs set: the protected stop also covers spread + commission
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
 NEUTRAL_FADE = ENV("NEUTRAL_FADE", "0") == "1"       # mixed trend: also reversal (limit) orders (off: they lost the most)
@@ -223,9 +237,9 @@ def local_dirs(bars, atr):
     mom = (c - closes[-9]) / atr
     return ema_dir, (1 if mom > 0.6 else -1 if mom < -0.6 else 0)
 
-def sweep_flags(bars):
+def sweep_flags(bars, n=None):
     """Fake breakout: price poked beyond the older range recently but closed back inside."""
-    k, n = FAKE_BREAK_BARS, RANGE_BARS
+    k, n = FAKE_BREAK_BARS, (n or RANGE_BARS)
     if len(bars) < n + k + 1:
         return False, False
     older, recent = bars[-(n + k):-k], bars[-k:]
@@ -246,7 +260,8 @@ def cost_price(sym):
 
 def plan_params(sym, tf):
     """Settings for this instrument and timeframe: the tested profile, or the plain settings."""
-    p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True, start=PLAN_START, end=PLAN_END)
+    p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True, start=PLAN_START, end=PLAN_END, range=RANGE_BARS,
+             stack=STACK_MAX if STACK_SAFE else 0)
     if USE_PROFILES:
         p.update(PROFILES.get(sym, {}).get(tf, {}))
     if not isinstance(p["rr"], (list, tuple)):
@@ -330,8 +345,12 @@ def realized(o, exit_px=None):
         return banked + rest * (exit_px - o["trig"]) * o["dir"]
     return banked
 
+def lot_for(sym, lot):
+    """The lot actually traded on this instrument: never below its smallest lot (Dow / Nasdaq 0.1 at OneRoyal)."""
+    return max(lot, INSTRUMENTS[sym].get("min_lot", 0.0))
+
 def money(sym, dist, lot):
-    return dist * INSTRUMENTS[sym]["contract"] * lot
+    return dist * INSTRUMENTS[sym]["contract"] * lot_for(sym, lot)
 
 def summarize(ledger, syms, tfs, lot, ref_ts):
     td = trading_day(ref_ts); wk = td.isocalendar()[:2]; mo = (td.year, td.month)
@@ -345,9 +364,10 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
         for key, same in (("day", d == td), ("week", d.isocalendar()[:2] == wk), ("month", (d.year, d.month) == mo)):
             if same:
                 o = out[key]; o["pips"] += pp; o["usd"] += uu
-                if e["dist"] > 0: o["win"] += 1
-                elif e["dist"] < 0: o["loss"] += 1
-                else: o["be"] += 1                    # closed at entry (protected exit)
+                eps = 0.05 * INSTRUMENTS[e["sym"]]["pip"]
+                if net > eps: o["win"] += 1
+                elif net < -eps: o["loss"] += 1
+                else: o["be"] += 1                    # closed at entry after costs (protected exit)
     return out
 
 # ───────────────────────────── messages ─────────────────────────────
@@ -594,7 +614,8 @@ def msg_signal(o, bias_info, price=None):
             f"{title(o)}\n{d} <b>{o['kind']}</b> — {KIND_AR.get(o['kind'], '')}\n{trend}\n\n"
             + "\n".join(rows) +
             f"\n\n📊 Trend <b>{bias_info['txt']}</b>\n      {bias_info['arrows']}\n"
-            f"⏳ Pending: waits for price to reach the entry · 1 pip = {INSTRUMENTS[sym]['pip']:g}\n"
+            f"⏳ Pending: waits for price to reach the entry\n"
+            f"💵 1 pip = {INSTRUMENTS[sym]['pip']:g} · ${money(sym, INSTRUMENTS[sym]['pip'], LOT_DEFAULT):,.2f} at lot {lot_for(sym, LOT_DEFAULT):g}\n"
             f"💡 <i>Enter a touch early, close a touch before the target.</i>" + footer())
 
 def msg_expired(o, reason, not_triggered):
@@ -633,16 +654,22 @@ def msg_be(o):
             f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
 
 def msg_protect(o, share):
+    sym = o["sym"]
+    if o.get("locked") and o.get("lock_d", 0) > 0:          # break-even after costs: entry + spread + commission
+        px = fmt(sym, o["lock_px"])
+        return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
+                f"انقل الستوب لـ <code>{px}</code> (الدخول + الكوميشن والسبريد)\n{html.escape(short(o))}\n\n"
+                f"Move your stop to <code>{px}</code> (entry + costs): from here the trade can not turn into a loss." + footer())
     return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
             f"انقل الستوب على سعر الدخول\n{html.escape(short(o))}\n\n"
             f"Move your stop to entry: from here the trade can not turn into a loss." + footer())
 
 def msg_lock(o, share):
     sym = o["sym"]; d = o["lock_d"]
-    usd = d * INSTRUMENTS[sym]["contract"] * LOCK_LOT
+    usd = money(sym, d, LOCK_LOT)
     return (f"🔒 <b>LOCK PROFIT</b> · price is <b>{share}%</b> of the way to the target\n"
             f"انقل الستوب لـ <code>{fmt(sym, o['lock_px'])}</code> وقفّل ربح\n{html.escape(short(o))}\n\n"
-            f"Move your stop to <code>{fmt(sym, o['lock_px'])}</code>: +{pips(sym, d)} pips locked (≈ ${usd:,.2f} at lot {LOCK_LOT:g})." + footer())
+            f"Move your stop to <code>{fmt(sym, o['lock_px'])}</code>: +{pips(sym, d)} pips locked (≈ ${usd:,.2f} at lot {lot_for(sym, LOCK_LOT):g})." + footer())
 
 def msg_locked(o):
     sym = o["sym"]; d = o.get("lock_d", 0.0)
@@ -729,7 +756,7 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry at 10% of the way, lock 5% at 20%, lock 30% at 50%.\n\n"
+            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry + costs at 10% of the way, lock 5% at 20%, lock 30% at 50%.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
@@ -1290,17 +1317,23 @@ class Engine:
                     if o["state"] == OPEN:
                         # protection in 3 steps; several can happen in one bar, the stop only moves forward
                         tg = abs(o["tps"][0] - trig)
+                        floor = cost_price(sym) if BE_PLUS_COST else 0.0   # spread + commission: a protected exit is no loss
+                        if floor > 0 and o["fav"] < 2 * floor:
+                            floor = 0.0                               # price not far enough yet: plain entry first
                         protect = False
                         if not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * tg:
-                            o["be"] = True                            # step 1: stop to entry
+                            o["be"] = True                            # step 1: stop to entry (+ costs)
                             protect = True
                         new_d = None
                         for at, to in ((LOCK1_AT, LOCK1_TO), (LOCK2_AT, LOCK2_TO)):
-                            if at > 0 and to > 0 and o["fav"] >= at * tg and to * tg > o.get("lock_d", 0.0) + 1e-12:
-                                new_d = to * tg                       # steps 2 and 3: stop into profit
+                            if at > 0 and to > 0 and o["fav"] >= at * tg and max(to * tg, floor) > o.get("lock_d", 0.0) + 1e-12:
+                                new_d = max(to * tg, floor)           # steps 2 and 3: stop into profit (never below the costs)
+                        to_floor = False
+                        if new_d is None and o["be"] and floor > o.get("lock_d", 0.0) + 1e-12:
+                            new_d, to_floor = floor, True             # step 1 with costs: entry + spread + commission
                         if new_d is not None:
                             o.update(be=True, locked=True, lock_d=new_d, lock_px=trig + d * new_d)
-                            self.say(o, msg_lock(o, pct(o["fav"], tg)))
+                            self.say(o, msg_protect(o, pct(o["fav"], tg)) if to_floor else msg_lock(o, pct(o["fav"], tg)))
                         elif protect:
                             self.say(o, msg_protect(o, pct(o["fav"], tg)))
 
@@ -1326,7 +1359,7 @@ class Engine:
         spike = bool(atr) and (bar.h - bar.l) > SPIKE_ATR * atr
         if spike and is_latest and in_win:
             self.stats["spike"] += 1                                # news-size candle: wait for the next bar
-        elif is_latest and in_win and atr and len(bars) > RANGE_BARS:
+        elif is_latest and in_win and atr and len(bars) > pp["range"]:
             prune_now = slot != ps["last_slot"]
             if prune_now:
                 ps["last_slot"] = slot
@@ -1346,11 +1379,16 @@ class Engine:
                         self.expire(p, "price moved far away")
             pend = [o for o in live if o["state"] == PENDING]
             have = {p["kind"] for p in pend}
-            open_dirs = {o["dir"] for o in live if o["state"] == OPEN}
-            win = bars[-RANGE_BARS:]
+            open_now = [o for o in live if o["state"] == OPEN]
+            open_dirs = {o["dir"] for o in open_now}
+            # stacking (tested per instrument and timeframe): one more trade the SAME way when every open trade
+            # that way is already protected (its stop at entry or better), up to "stack" trades
+            safe_dirs = {dd for dd in open_dirs if pp["stack"] > 0 and sum(1 for o in open_now if o["dir"] == dd) < pp["stack"]
+                         and all(o["be"] for o in open_now if o["dir"] == dd)}
+            win = bars[-pp["range"]:]
             hi, lo = max(b.h for b in win), min(b.l for b in win)
             if hi - lo >= atr and self.bc.targets(sym, tf):
-                fake_up, fake_dn = sweep_flags(bars)
+                fake_up, fake_dn = sweep_flags(bars, pp["range"])
                 built = build_orders(atr, hi, lo, bar.c, bias_info["now"], tick, pp["rr"], ema_dir, mom_dir, fake_up, fake_dn,
                                      sl_mult=pp["sl"], limits=pp["limits"], mixed=pp["mixed"])
                 lean = mom_dir or ema_dir or bias_info["now"]
@@ -1364,7 +1402,7 @@ class Engine:
                 self.stats["built"] += len(built)
                 add = []
                 for n in built:
-                    if n["kind"] in have or n["dir"] in open_dirs or -n["dir"] in open_dirs:
+                    if n["kind"] in have or -n["dir"] in open_dirs or (n["dir"] in open_dirs and n["dir"] not in safe_dirs):
                         continue                                    # already waiting, or a trade is open (never both directions)
                     if n["rrs"][0] < MIN_RR:
                         self.stats["rr_skip"] += 1
@@ -1479,7 +1517,8 @@ class Engine:
                 if not 0.001 <= v <= 1000:
                     raise ValueError
                 sub["lot"] = v
-                self.tg.send(f"Lot size set to <b>{v:g}</b>. This changes the money numbers in your reports.", chat=cid)
+                self.tg.send(f"Lot size set to <b>{v:g}</b>. This changes the money numbers in your reports. "
+                             f"Dow and Nasdaq use at least their smallest lot (0.1).", chat=cid)
             except ValueError:
                 self.tg.send("Write it like this: <code>/lot 0.1</code>", chat=cid)
         elif cmd == "/report":
