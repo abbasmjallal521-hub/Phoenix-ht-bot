@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v25)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v26)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v26: the report counts wins / losses / at entry (W / L / BE) the same way as the indicator v18 dashboard:
+  a trade that came back to its stop at entry (moved there before it covered the costs: "PROTECTED EXIT · 0R") is BE,
+  not a loss (its money still shows the small cost) · a profit-locked exit is a win only when it is above the costs,
+  else BE · a trade closed by the time limit is a win when it closed above its entry, else a loss · the trades booked
+  before v26 are read the same way. Signals, settings and the money are the same as v25.
 
 v25 (same as indicator v18 and the MetaTrader 5 EA v2; made for the OneRoyal ECN account; backtests in Google Drive):
   new tested settings (PROFILES) for every instrument and timeframe, tested on one year of real 1-minute prices WITH the
@@ -345,6 +351,19 @@ def realized(o, exit_px=None):
         return banked + rest * (exit_px - o["trig"]) * o["dir"]
     return banked
 
+def outcome(o, dist, cost):
+    """W (1), L (-1) or BE (2) of a closed trade, counted the same way as the indicator dashboard."""
+    st = o["state"]
+    if st == TP_HIT:
+        return 1
+    if st == SL_HIT:
+        return -1
+    if st == BE_HIT:                                  # back to the stop at entry: BE (its money still shows the cost)
+        return 1 if o.get("hits", 0) > 0 else 2       # (with two targets the first one was already banked)
+    if st == LOCK_HIT:                                # locked stop: a win only when it is above the costs
+        return 1 if dist - cost > INSTRUMENTS[o["sym"]]["tick"] else 2
+    return 1 if dist > 0 else -1                      # time limit: closed above or below its entry
+
 def lot_for(sym, lot):
     """The lot actually traded on this instrument: never below its smallest lot (Dow / Nasdaq 0.1 at OneRoyal)."""
     return max(lot, INSTRUMENTS[sym].get("min_lot", 0.0))
@@ -361,13 +380,16 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
         d = date.fromisoformat(e["td"])
         net = e["dist"] - e.get("cost", e.get("sp", 0.0))       # after the trading cost (commission + spread)
         pp, uu = net / INSTRUMENTS[e["sym"]]["pip"], money(e["sym"], net, lot)
+        oc = e.get("oc")
+        if oc is None:                                # booked before v26: read the same way (a stop at entry booked 0)
+            dist = e["dist"]
+            oc = 2 if abs(dist) < 1e-12 else -1 if dist < 0 else 1 if net > INSTRUMENTS[e["sym"]]["tick"] else 2
         for key, same in (("day", d == td), ("week", d.isocalendar()[:2] == wk), ("month", (d.year, d.month) == mo)):
             if same:
                 o = out[key]; o["pips"] += pp; o["usd"] += uu
-                eps = 0.05 * INSTRUMENTS[e["sym"]]["pip"]
-                if net > eps: o["win"] += 1
-                elif net < -eps: o["loss"] += 1
-                else: o["be"] += 1                    # closed at entry after costs (protected exit)
+                if oc == 1: o["win"] += 1
+                elif oc == -1: o["loss"] += 1
+                else: o["be"] += 1                    # at entry (protected exit; the money still shows its small cost)
     return out
 
 # ───────────────────────────── messages ─────────────────────────────
@@ -1255,7 +1277,8 @@ class Engine:
 
     def book(self, o, bar, exit_px=None):
         dist, cost, td = realized(o, exit_px), cost_price(o["sym"]), trading_day(bar.t).isoformat()
-        self.ledger.append({"t": bar.t, "td": td, "sym": o["sym"], "tf": o["tf"], "dist": dist, "cost": cost})
+        self.ledger.append({"t": bar.t, "td": td, "sym": o["sym"], "tf": o["tf"], "dist": dist, "cost": cost,
+                            "oc": outcome(o, dist, cost)})
         cutoff = bar.t - 100 * 86400
         self.ledger = [e for e in self.ledger if e["t"] > cutoff]
 
