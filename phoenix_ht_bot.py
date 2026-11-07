@@ -1,13 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v26)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v27)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v27 (same rules as the indicator v19; made for trading by hand on the OneRoyal ECN account; backtests in Google Drive):
+  buy / sell zones and order blocks at every market open: at the Tokyo (09:00), London (08:00) and New York (09:30)
+  open, each in its own local time, the zones of the last day that no candle has closed through are taken again (swing
+  lows = buy zones, swing highs = sell zones, order blocks = the last opposite candle before price broke the last swing).
+  Where the tested setting says so, a BUY LIMIT waits at the top of the nearest buy zone under the price and a SELL
+  LIMIT at the bottom of the nearest sell zone above it, the stop beyond the zone, each zone used once; the signal says
+  which zone and which market open · all five instruments on 5m and 15m (gold, Nasdaq, Dow, silver, oil) plus gold and
+  Nasdaq 30m / 1h; a chart where one of the three test years lost money says so in every signal (trade it smaller) ·
+  the full tested table is the default (ACCOUNT=big: no stop cap, no daily target); ACCOUNT=small keeps the $200 table
+  (gold 5m and Nasdaq 1h, stop cap, daily target and loss limit; DAY_TARGET_USD / DAY_MAX_LOSS_USD / MAX_RISK_USD) ·
+  stricter trend where it tested better (gold 5m: 4H, 1H and 15M the same way; gold 15m: all four) and trading hours
+  per chart · trades followed minute by minute: every minute the bot reads the 1-minute candles of the instruments
+  that have waiting or open trades, so fills, targets, stops and the stop moves are sent within the minute (move the
+  stop as soon as the message comes, or when the live profit in MT5 reaches the step); the backtest does the same
+  inside each candle, so the bot, the indicator and the backtest count the same trades · at most two stop moves per
+  trade, as shares of the way to the target, shown in every signal as prices and $ at the lot shown (gold / silver /
+  oil 0.01, Dow / Nasdaq 0.1) · targets 1:1 or more (never smaller than the stop) · quiet market: no order when spread
+  + commission are more than 6% of the stop · tested on three years of real 1-minute prices with the ECN costs ·
+  candles missed between two runs are planned like the indicator does; the orders from them that are still waiting are
+  sent, and the ones already open are followed after a restart too · messages in MT5 points and $ at the lot shown ·
+  MINUTES=0 = follow the trades on the chart candles only (as before).
 
 v26: the report counts wins / losses / at entry (W / L / BE) the same way as the indicator v18 dashboard:
   a trade that came back to its stop at entry (moved there before it covered the costs: "PROTECTED EXIT · 0R") is BE,
@@ -35,7 +57,7 @@ Usage:
   python phoenix_ht_bot.py                    # run for real (needs .env)
   python phoenix_ht_bot.py --minutes 340      # run 340 minutes, then save and exit (GitHub Actions)
 """
-import os, re, sys, json, time, html, random, argparse, logging
+import os, bisect, re, sys, json, time, html, random, argparse, logging
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
@@ -119,37 +141,84 @@ RR = {"1m": parse_rr(ENV("RR_1M", "1"), [1.0]),
 #   on = signals on this timeframe · sl = stop distance in ATR (+ the sweep buffer) · rr = target (reward:risk)
 #   limits = reversal limit orders · mixed = breakouts when the higher timeframes are mixed
 #   start / end = trading hours, New York time (no new orders outside them)
+#   protect = "pct": the stop goes to entry (+ costs) at be_at_r of the way to the target, locks lock1_to of the target
+#   at lock1_at, and lock2_to at lock2_at (shares of the way) · protect = "usd": at be_usd $ the stop goes to entry,
+#   at lock_at_usd $ it locks lock_usd $ ($ at the lot shown: gold / silver / oil 0.01, Dow / Nasdaq 0.1)
+#   cost_max = quiet market: no order when spread + commission are more than this share of the stop
+#   day_green = once the pair's day is in profit no more orders that day · day_losses = the same after this many
+#   losses (0 = off) - off in every tested setting: signals all day. Tested on three years (Mar 2023 - Oct 2026) of
+#   real 1-minute prices, trades followed minute by minute, OneRoyal ECN costs, at most two stop moves per trade;
+#   weak = one of the three years lost money (the signal says so) · zones / zsl / zrr / ztrend / zkeep / rng: see ZONES.
+#   day_target / day_max_loss / max_risk (small accounts, $ at the lot shown): see DAY_TARGET_USD below.
+# Two tested tables (ACCOUNT=small or big):
+#   PROFILES_SMALL = accounts of about $200 at the smallest lot (gold 0.01, Nasdaq 0.1), profits withdrawn every
+#     day: smaller stops, no order with a stop above the cap, daily target and loss limit; on = only the charts that
+#     never took such an account below about $50 in three years, together on one account (gold 5m + Nasdaq 1h)
+#   PROFILES = the full table (default): the most money per lot, all five instruments on 5m / 15m, gold and Nasdaq to 1h
 USE_PROFILES = ENV("USE_PROFILES", "1") == "1"
+ACCOUNT = (ENV("ACCOUNT", "big") or "big").strip().lower()     # big (default) = the full tested table
 PROFILES = {
     "XAUUSD": {
-        "5m": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=True, start="00:00", end="24:00", stack=3),
-        "15m": dict(on=True, sl=1.3, rr=[1], limits=True, mixed=True, start="01:30", end="24:00"),
-        "30m": dict(on=True, sl=1.3, rr=[2], limits=False, mixed=True, start="01:30", end="21:30", range=12),
-        "1h": dict(on=True, sl=1.6, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00", stack=2),
+        "5m": dict(on=True, sl=3.0, rr=[2.0], limits=False, mixed=False, start="00:00", end="24:00", stack=4, align=1, zones=3, zsl=0.25, zrr=[1.5], ztrend=1, zkeep=0, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "15m": dict(on=True, sl=3.0, rr=[1.5], limits=True, mixed=True, start="01:30", end="24:00", stack=4, align=2, zones=3, zsl=0.25, zrr=[1.0], ztrend=1, zkeep=0, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="21:30", range=12, stack=3, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "1h": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
     "XAGUSD": {
-        "5m": dict(on=False, sl=4, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", range=48),
-        "15m": dict(on=True, sl=2, rr=[1.5], limits=False, mixed=True, start="08:00", end="24:00"),
-        "30m": dict(on=True, sl=1, rr=[1], limits=False, mixed=True, start="01:30", end="24:00", range=36),
-        "1h": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=False, start="00:00", end="21:30"),
+        "5m": dict(on=True, sl=3.0, rr=[1.5], limits=False, mixed=False, start="02:00", end="12:00", range=48, zones=2, zsl=0.25, zrr=[1.0], ztrend=1, zkeep=0, weak=True, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "15m": dict(on=True, sl=4.0, rr=[1.5], limits=False, mixed=True, start="08:00", end="12:00", zones=2, zsl=0.25, zrr=[1.5], ztrend=1, zkeep=0, weak=True, protect="pct", be_at_r=0.5, lock1_at=0.0, lock1_to=0.0, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # h50
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="24:00", range=36, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="21:30", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
     "US30": {
-        "5m": dict(on=True, sl=1.3, rr=[1], limits=False, mixed=True, start="01:30", end="17:00", range=48, stack=2),
-        "15m": dict(on=True, sl=1, rr=[2], limits=False, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=1.3, rr=[2.5], limits=True, mixed=True, start="00:00", end="24:00", stack=2),
-        "1h": dict(on=False, sl=1, rr=[1.5], limits=True, mixed=False, start="00:00", end="24:00"),
+        "5m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="02:00", end="12:00", range=48, stack=2, zones=3, zsl=0.75, zrr=[1.0], ztrend=1, zkeep=0, rng=False, weak=True, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "15m": dict(on=True, sl=3.0, rr=[2.0], limits=False, mixed=True, start="02:00", end="12:00", align=1, zones=2, zsl=0.75, zrr=[1.5], ztrend=1, zkeep=0, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=False, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
     "NAS100": {
-        "5m": dict(on=True, sl=2, rr=[1], limits=False, mixed=True, start="08:00", end="24:00"),
-        "15m": dict(on=True, sl=3, rr=[1], limits=False, mixed=True, start="01:30", end="24:00"),
-        "30m": dict(on=True, sl=1, rr=[1.2], limits=False, mixed=True, start="01:30", end="24:00", stack=2),
-        "1h": dict(on=True, sl=1.3, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
+        "5m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="08:00", end="24:00", protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "15m": dict(on=True, sl=4.0, rr=[1.5], limits=False, mixed=True, start="03:00", end="11:00", protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "30m": dict(on=True, sl=3.0, rr=[1.5], limits=False, mixed=False, start="01:30", end="24:00", stack=4, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "1h": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
     },
     "USOIL": {
-        "5m": dict(on=False, sl=3.5, rr=[1.2], limits=False, mixed=False, start="00:00", end="24:00"),
-        "15m": dict(on=False, sl=2.5, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00"),
-        "30m": dict(on=True, sl=1.6, rr=[1.2], limits=False, mixed=True, start="00:00", end="24:00", stack=3),
-        "1h": dict(on=True, sl=1.3, rr=[1.5], limits=True, mixed=True, start="00:00", end="17:00"),
+        "5m": dict(on=True, sl=3.0, rr=[1.5], limits=False, mixed=False, start="03:00", end="11:00", weak=True, protect="pct", be_at_r=0.5, lock1_at=0.0, lock1_to=0.0, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # h50
+        "15m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="03:00", end="11:00", align=2, zones=3, zsl=0.75, zrr=[1.0], ztrend=2, zkeep=0, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", stack=3, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="17:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+    },
+}
+PROFILES_SMALL = {
+    "XAUUSD": {
+        "5m": dict(on=True, sl=1.5, rr=[2.0], limits=False, mixed=False, start="00:00", end="24:00", stack=4, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0, day_target=5.0, day_max_loss=15.0, max_risk=8.0),  # q1
+        "15m": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="01:30", end="24:00", stack=4, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=False, sl=2.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="21:30", range=12, stack=3, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "1h": dict(on=False, sl=2.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+    },
+    "XAGUSD": {
+        "5m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", range=48, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "15m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="08:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="24:00", range=36, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="21:30", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+    },
+    "US30": {
+        "5m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="17:00", range=48, stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "15m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=False, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+    },
+    "NAS100": {
+        "5m": dict(on=False, sl=2.0, rr=[1.5], limits=False, mixed=True, start="08:00", end="24:00", protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "15m": dict(on=False, sl=4.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="24:00", protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="01:30", end="24:00", stack=4, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "1h": dict(on=True, sl=2.0, rr=[2.0], limits=False, mixed=True, start="00:00", end="24:00", stack=2, protect="usd", be_usd=5.0, lock_at_usd=10.0, lock_usd=5.0, cost_max=0.06, day_green=False, day_losses=0, day_target=5.0, max_risk=16.0),  # U5L
+    },
+    "USOIL": {
+        "5m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "15m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", stack=3, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="17:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
 }
 
@@ -161,7 +230,7 @@ MOVE_PER_BAR = float(ENV("MOVE_PER_BAR", "0.5"))     # net ATR price travels per
 MAX_HOLD_HOURS = float(ENV("MAX_HOLD_HOURS", "24"))   # the last target must be reachable within this many hours
 
 # quality rules (fewer stop-outs)
-# trade protection in 3 steps (same as the indicator v18 and the EA v2), shares of the way to the target:
+# plain settings with PROTECT=pct only (the v25 / v26 protection, indicator v18 and EA v2): 3 steps, shares of the way:
 BE_AT_R = float(ENV("BE_AT_R", "0.1"))               # step 1: at 10% the stop moves to entry (0 = off)
 LOCK1_AT = float(ENV("LOCK1_AT", "0.2"))             # step 2: at 20% ...
 LOCK1_TO = float(ENV("LOCK1_TO", "0.05"))            # ... the stop moves to 5% of the target (profit locked)
@@ -171,6 +240,28 @@ LOCK_LOT = float(ENV("LOCK_LOT", ENV("LOT_DEFAULT", "0.01")))   # lot used for t
 STACK_SAFE = ENV("STACK_SAFE", "0") == "1"           # plain settings: one more trade the same way once the open one is protected
 STACK_MAX = int(ENV("STACK_MAX", "3"))              # ... up to this many open trades the same way (the tested settings set their own)
 BE_PLUS_COST = ENV("BE_PLUS_COST", "1") == "1"   # with trading costs set: the protected stop also covers spread + commission
+# Plain settings only (USE_PROFILES=0; the tested settings set their own steps): protection in money: +$2 -> the stop
+# goes to entry (+ costs), +$5 -> the stop locks $5, then on to the target. The $ are at the lot shown (gold / silver /
+# oil 0.01, Dow / Nasdaq 0.1). PROTECT=pct = steps of the way to the target instead (BE_AT_R, LOCK1_*, LOCK2_*).
+PROTECT = (ENV("PROTECT", "usd") or "usd").strip().lower()
+BE_USD = float(ENV("BE_USD", "2"))                   # step 1: at this profit the stop moves to entry (+ costs)
+LOCK_AT_USD = float(ENV("LOCK_AT_USD", "5"))         # step 2: at this profit ...
+LOCK_USD = float(ENV("LOCK_USD", "5"))               # ... the stop locks this much
+REAL_STOP = ENV("REAL_STOP", "1") == "1"             # a moved stop goes only where it can really be put: behind the price
+COST_MAX = float(ENV("COST_MAX", "0"))               # plain settings: no order when costs are more than this share of the stop
+REPLAY_MISSED = ENV("REPLAY_MISSED", "1") == "1"     # candles missed between runs are planned too; still-waiting orders are sent
+MINUTES = ENV("MINUTES", "1") == "1"                 # follow trades on 1-minute candles: stop moves sent within the minute
+DAY_GREEN = ENV("DAY_GREEN", "0") == "1"             # daily rule: once the day is in profit, no more orders on that pair today
+DAY_LOSSES = int(ENV("DAY_LOSSES", "0"))             # daily rule: after this many losses, no more orders on that pair today
+DAY_RULE = (ENV("DAY_RULE", "auto") or "auto").strip().lower()   # auto = as the tested setting says (all off) · on · off
+# Small accounts (the tested setting can set its own; a value here wins, 0 = off). $ at the lot shown:
+#   DAY_TARGET_USD   your daily target: once a pair's closed profit today reaches it, its waiting orders go, no new ones
+#                    today, and a message says so (close the open trades too if that is your way)
+#   DAY_MAX_LOSS_USD daily loss limit: once a pair's closed loss today reaches it, no new orders today
+#   MAX_RISK_USD     no order when its stop is more than this many $ (the account can not take it)
+def user_or_tested(name, pp, key):
+    v = (ENV(name, "") or "").strip()
+    return float(v) if v else float(pp.get(key, 0.0) or 0.0)
 COOLDOWN_MIN = int(ENV("COOLDOWN_MIN", "30"))        # after a stop-out, no new order in the same direction for this long
 SPIKE_ATR = float(ENV("SPIKE_ATR", "3.0"))           # skip planning right after a news-size candle (range above this many ATR)
 NEUTRAL_FADE = ENV("NEUTRAL_FADE", "0") == "1"       # mixed trend: also reversal (limit) orders (off: they lost the most)
@@ -252,6 +343,130 @@ def sweep_flags(bars, n=None):
     ph, pl = max(b.h for b in older), min(b.l for b in older)
     return (max(b.h for b in recent) > ph and bars[-1].c < ph), (min(b.l for b in recent) < pl and bars[-1].c > pl)
 
+# ───────────────────────────── buy / sell zones and order blocks (v27, same as the indicator) ─────────────────────────────
+# At every market open (Tokyo, London, New York) the zones of the last day that no candle has CLOSED through are taken:
+# swing lows = buy zones, swing highs = sell zones, and order blocks (the last opposite candle before price broke the
+# last swing). During that session a BUY LIMIT waits at the top of the nearest buy zone under the price and a SELL LIMIT
+# at the bottom of the nearest sell zone above it (as the tested setting of the chart says), the stop beyond the zone.
+ZONE_LEN = int(ENV("ZONE_LEN", "8"))            # swing size of a zone: bars each side
+OB_LEN = int(ENV("OB_LEN", "5"))                # swing size of the break that makes an order block
+ZONE_AGE_H = float(ENV("ZONE_AGE_H", "24"))     # zones formed in the last day (and not broken since)
+ZONE_W = 0.15                                    # a swing zone = the swing price +- this share of the ATR
+OB_BACK = 100                                    # an order block: the break comes within this many bars of the swing
+SESSIONS = (("TOKYO", "Asia/Tokyo", 9, 0), ("LONDON", "Europe/London", 8, 0), ("NEW YORK", "America/New_York", 9, 30))
+# plain settings (the tested setting of each chart says its own): 0 = no zone orders, 1 = swing zones, 2 = order blocks,
+# 3 = both; stop room beyond the zone (ATR, + the stop-hunt room); target (R); trend rule (see zone_allowed); keep = a
+# zone order is not cancelled when the chart runs against it or the trend turns (only when its zone breaks)
+ZONES = int(ENV("ZONES", "0"))
+ZONE_SL = float(ENV("ZONE_SL", "0.5"))
+ZONE_RR = parse_rr(ENV("ZONE_RR", "1.5"), [1.5])
+ZONE_TREND = int(ENV("ZONE_TREND", "1"))
+ZONE_KEEP = int(ENV("ZONE_KEEP", "0"))
+_OPENS = {}
+
+def opens_on(d):
+    """The market opens on the UTC date d: [(UTC seconds, name)] (Tokyo 09:00, London 08:00, New York 09:30 local)."""
+    if d not in _OPENS:
+        _OPENS[d] = sorted((int(datetime(d.year, d.month, d.day, h, m, tzinfo=ZoneInfo(tz)).timestamp()), name)
+                           for name, tz, h, m in SESSIONS)
+    return _OPENS[d]
+
+def last_open(t):
+    """The latest market open at or before t: (UTC seconds, name)."""
+    d = datetime.fromtimestamp(t, timezone.utc).date()
+    best = None
+    for dd in (d - timedelta(days=1), d):
+        for T, name in opens_on(dd):
+            if T <= t and (best is None or T > best[0]):
+                best = (T, name)
+    return best
+
+def swing_hi(hs, j, n):
+    """A swing high: above the n candles before it and not below the n after it (the indicator uses the same rule)."""
+    h = hs[j]
+    return all(h > hs[j - i] and h >= hs[j + i] for i in range(1, n + 1))
+
+def swing_lo(ls, j, n):
+    v = ls[j]
+    return all(v < ls[j - i] and v <= ls[j + i] for i in range(1, n + 1))
+
+def find_zones(bars, atr, use=3, n=None, ob_n=None, age_h=None):
+    """The zones not broken at the close of bars[-1], formed in the last age_h hours. use: 1 = swing zones, 2 = order
+    blocks, 3 = both. A swing zone is the swing price +- ZONE_W x ATR; an order block is its candle (low to high). A zone
+    is broken once a candle closes beyond its far side. Each zone: dict(d=+1 buy / -1 sell, lo, hi, t, src)."""
+    n, ob_n, age = n or ZONE_LEN, ob_n or OB_LEN, (age_h or ZONE_AGE_H) * 3600
+    N = len(bars)
+    if N < 2 * max(n, ob_n) + 2 or not atr:
+        return []
+    t_min = bars[-1].t - age
+    hs, ls, cs = [b.h for b in bars], [b.l for b in bars], [b.c for b in bars]
+    mn, mx = [0.0] * (N + 1), [0.0] * (N + 1)               # lowest / highest close from index i to the end
+    mn[N], mx[N] = float("inf"), float("-inf")
+    for i in range(N - 1, -1, -1):
+        mn[i], mx[i] = min(mn[i + 1], cs[i]), max(mx[i + 1], cs[i])
+    out = []
+    if use & 1:
+        zw = ZONE_W * atr
+        for j in range(n, N - n):
+            if bars[j].t < t_min:
+                continue
+            if swing_hi(hs, j, n) and mx[j + 1] <= hs[j] + zw:
+                out.append(dict(d=-1, lo=hs[j] - zw, hi=hs[j] + zw, t=bars[j].t, src="ZONE"))
+            if swing_lo(ls, j, n) and mn[j + 1] >= ls[j] - zw:
+                out.append(dict(d=1, lo=ls[j] - zw, hi=ls[j] + zw, t=bars[j].t, src="ZONE"))
+    if use & 2:
+        sh = sl = None                                       # last swing high / low: (price, index), and broken yet?
+        sh_b = sl_b = True
+        for k in range(2 * ob_n, N):
+            j = k - ob_n
+            if swing_hi(hs, j, ob_n):
+                sh, sh_b = (hs[j], j), False
+            if swing_lo(ls, j, ob_n):
+                sl, sl_b = (ls[j], j), False
+            for side in (1, -1):
+                sw, broken = (sh, sh_b) if side == 1 else (sl, sl_b)
+                if sw is None or broken or not ((cs[k] > sw[0]) if side == 1 else (cs[k] < sw[0])):
+                    continue
+                if side == 1:
+                    sh_b = True
+                else:
+                    sl_b = True
+                if k - sw[1] > OB_BACK or bars[k].t < t_min:
+                    continue
+                back = max(1, min(k - sw[1] + ob_n * 2, OB_BACK))
+                ke = 1                                      # the candle the move started from (lowest low / highest high)
+                for jj in range(1, back + 1):
+                    if (ls[k - jj] < ls[k - ke]) if side == 1 else (hs[k - jj] > hs[k - ke]):
+                        ke = jj
+                kk = -1                                     # ... and the last opposite candle at or before it
+                for jj in range(ke, min(ke + 5, back) + 1):
+                    b = bars[k - jj]
+                    if (b.c < b.o) if side == 1 else (b.c > b.o):
+                        kk = jj
+                        break
+                if kk < 0:
+                    continue
+                b = bars[k - kk]
+                if (side == 1 and mn[k] >= b.l) or (side == -1 and mx[k] <= b.h):
+                    out.append(dict(d=side, lo=b.l, hi=b.h, t=b.t, src="OB"))
+    return out
+
+def zone_order(d, z, sp, slD, rrs, bias):
+    """A BUY LIMIT at the top of a buy zone / a SELL LIMIT at the bottom of a sell zone; the stop beyond the far side."""
+    trig = z["hi"] if d == 1 else z["lo"]
+    sl = z["lo"] - slD if d == 1 else z["hi"] + slD
+    risk = abs(trig - sl)
+    return dict(dir=d, kind="BUY LIMIT" if d == 1 else "SELL LIMIT", is_stop=False, with_trend=(bias == d),
+                lo=trig - sp if d == 1 else trig, hi=trig if d == 1 else trig + sp, entry=trig, trig=trig, sl=sl,
+                inval=sl, risk=risk, sp=sp, rrs=list(rrs), tps=[trig + d * r * risk for r in rrs])
+
+def zone_allowed(d, bias, ema_dir, mom_dir, mode):
+    """Zone orders: mode 1 = with the higher-timeframe trend only, 2 = with the trend or a mixed trend, 0 = any; never
+    while the chart runs hard against the order (falling for a buy, rising for a sell)."""
+    if ema_dir == -d and mom_dir == -d:
+        return False
+    return bias == d if mode == 1 else bias != -d if mode == 2 else True
+
 def arrow(b): return "▲" if b == 1 else "▼" if b == -1 else "•"
 
 def ny_parts(ts):
@@ -264,14 +479,20 @@ def cost_price(sym):
     i = INSTRUMENTS[sym]
     return i.get("spread", 0.0) + i.get("commission", 0.0) / max(i["contract"], 1e-9)
 
+def active_profiles():
+    return PROFILES_SMALL if ACCOUNT == "small" else PROFILES
+
 def plan_params(sym, tf):
     """Settings for this instrument and timeframe: the tested profile, or the plain settings."""
     p = dict(on=True, sl=SL_MULT, rr=list(RR[tf]), limits=True, mixed=True, start=PLAN_START, end=PLAN_END, range=RANGE_BARS,
-             stack=STACK_MAX if STACK_SAFE else 0)
+             stack=STACK_MAX if STACK_SAFE else 0, rng=True, zones=ZONES, zsl=ZONE_SL, zrr=ZONE_RR, ztrend=ZONE_TREND,
+             zkeep=ZONE_KEEP)
     if USE_PROFILES:
-        p.update(PROFILES.get(sym, {}).get(tf, {}))
+        p.update(active_profiles().get(sym, {}).get(tf, {}))
     if not isinstance(p["rr"], (list, tuple)):
         p["rr"] = [float(p["rr"])]
+    if not isinstance(p["zrr"], (list, tuple)):
+        p["zrr"] = [float(p["zrr"])]
     for k in ("start", "end"):                      # "03:00" -> minutes after midnight (New York)
         if isinstance(p[k], str):
             p[k] = hm(p[k])
@@ -368,25 +589,30 @@ def lot_for(sym, lot):
     """The lot actually traded on this instrument: never below its smallest lot (Dow / Nasdaq 0.1 at OneRoyal)."""
     return max(lot, INSTRUMENTS[sym].get("min_lot", 0.0))
 
+def usd_px(sym, usd):
+    """A money amount at the lot shown (LOT_DEFAULT, never below the smallest lot) as a price distance."""
+    i = INSTRUMENTS[sym]
+    return usd / max(i["contract"] * lot_for(sym, LOT_DEFAULT), 1e-12)
+
 def money(sym, dist, lot):
     return dist * INSTRUMENTS[sym]["contract"] * lot_for(sym, lot)
 
 def summarize(ledger, syms, tfs, lot, ref_ts):
     td = trading_day(ref_ts); wk = td.isocalendar()[:2]; mo = (td.year, td.month)
-    out = {k: dict(pips=0.0, usd=0.0, win=0, loss=0, be=0) for k in ("day", "week", "month")}
+    out = {k: dict(pts=0.0, usd=0.0, win=0, loss=0, be=0) for k in ("day", "week", "month")}
     for e in ledger:
         if e["sym"] not in syms or e["tf"] not in tfs:
             continue
         d = date.fromisoformat(e["td"])
         net = e["dist"] - e.get("cost", e.get("sp", 0.0))       # after the trading cost (commission + spread)
-        pp, uu = net / INSTRUMENTS[e["sym"]]["pip"], money(e["sym"], net, lot)
+        pp, uu = net / point(e["sym"]), money(e["sym"], net, lot)        # MT5 points and $
         oc = e.get("oc")
         if oc is None:                                # booked before v26: read the same way (a stop at entry booked 0)
             dist = e["dist"]
             oc = 2 if abs(dist) < 1e-12 else -1 if dist < 0 else 1 if net > INSTRUMENTS[e["sym"]]["tick"] else 2
         for key, same in (("day", d == td), ("week", d.isocalendar()[:2] == wk), ("month", (d.year, d.month) == mo)):
             if same:
-                o = out[key]; o["pips"] += pp; o["usd"] += uu
+                o = out[key]; o["pts"] += pp; o["usd"] += uu
                 if oc == 1: o["win"] += 1
                 elif oc == -1: o["loss"] += 1
                 else: o["be"] += 1                    # at entry (protected exit; the money still shows its small cost)
@@ -604,6 +830,49 @@ def fmt(sym, x):
 def pips(sym, dist):
     return f"{abs(dist) / INSTRUMENTS[sym]['pip']:,.0f}"
 
+def point(sym):
+    """1 MT5 point = the price step of the OneRoyal symbol = pip / 10 (gold 0.01, silver 0.001, Dow / Nasdaq 0.1, oil 0.001)."""
+    return INSTRUMENTS[sym]["pip"] / 10.0
+
+def pts(sym, dist):
+    return f"{abs(dist) / point(sym):,.0f}"
+
+def usd_txt(sym, dist):
+    """A price distance as $ at the lot shown (LOT_DEFAULT, never below the smallest lot)."""
+    return f"${abs(money(sym, dist, LOT_DEFAULT)):,.2f}"
+
+def prot_steps(o):
+    """The protection of this order as distances from the entry: [(reached at, stop goes to), ...]; stop goes to 0 =
+    entry. Money ($ at the lot shown) or shares of the way to the target, as the tested setting says."""
+    sym = o["sym"]
+    pp = plan_params(sym, o["tf"])
+    if pp.get("protect", PROTECT) == "usd":
+        be, at, lk = pp.get("be_usd", BE_USD), pp.get("lock_at_usd", LOCK_AT_USD), pp.get("lock_usd", LOCK_USD)
+        steps = [(usd_px(sym, be), 0.0)] if be > 0 else []
+        if at > 0 and lk > 0:
+            steps.append((usd_px(sym, at), usd_px(sym, lk)))
+        return steps
+    tg = abs(o["tps"][0] - o["trig"])
+    be = pp.get("be_at_r", BE_AT_R)
+    steps = [(be * tg, 0.0)] if be > 0 else []
+    for at, to in ((pp.get("lock1_at", LOCK1_AT), pp.get("lock1_to", LOCK1_TO)),
+                   (pp.get("lock2_at", LOCK2_AT), pp.get("lock2_to", LOCK2_TO))):
+        if at > 0 and to > 0:
+            steps.append((at * tg, to * tg))
+    return steps
+
+def prot_rows(o):
+    """The protection of this order as prices: where the stop goes to entry, and where it locks profit."""
+    sym, d, trig = o["sym"], o["dir"], o["trig"]
+    rows = []
+    for at, to in prot_steps(o):
+        if to <= 0:
+            rows.append(f"🛡 At <code>{fmt(sym, trig + d * at)}</code> (+{usd_txt(sym, at)}) → stop to entry")
+        else:
+            rows.append(f"🔒 At <code>{fmt(sym, trig + d * at)}</code> (+{usd_txt(sym, at)}) → stop to "
+                        f"<code>{fmt(sym, trig + d * to)}</code> (+{usd_txt(sym, to)} locked)")
+    return rows
+
 def title(o):
     return f"{ICON.get(o['sym'], '•')} <b>{o['sym']}</b> {INSTRUMENTS[o['sym']]['name']}  ·  ⏱ <b>{o['tf'].upper()}</b>"
 
@@ -613,7 +882,7 @@ def short(o):
 def rr_txt(o):
     return " / ".join(f"1:{r:g}" for r in o["rrs"])
 
-def msg_signal(o, bias_info, price=None):
+def msg_signal(o, bias_info, price=None, late=False):
     sym = o["sym"]
     d = "🟢" if o["dir"] == 1 else "🔴"
     if bias_info["now"] == 0:
@@ -625,20 +894,60 @@ def msg_signal(o, bias_info, price=None):
         away = o["trig"] - price
         where = "above" if away > 0 else "below"
         rows.append(f"💰 Price now     <code>{fmt(sym, price)}</code>")
-        rows.append(f"🎯 Entry          <code>{fmt(sym, o['trig'])}</code>  · {pips(sym, away)} pips {where}")
+        rows.append(f"🎯 Entry          <code>{fmt(sym, o['trig'])}</code>  · {pts(sym, away)} points {where}")
     else:
         rows.append(f"🎯 Entry          <code>{fmt(sym, o['trig'])}</code>")
-    rows.append(f"🛑 Stop loss     <code>{fmt(sym, o['sl'])}</code>  · −{pips(sym, o['sl'] - o['trig'])} pips")
+    risk = o["sl"] - o["trig"]
+    rows.append(f"🛑 Stop loss     <code>{fmt(sym, o['sl'])}</code>  · −{pts(sym, risk)} points · −{usd_txt(sym, risk)}")
     for i, (tp, r) in enumerate(zip(o["tps"], o["rrs"]), 1):
         name = "Take profit" if len(o["tps"]) == 1 else f"Target {i}"
-        rows.append(f"🏆 {name}  <code>{fmt(sym, tp)}</code>  · +{pips(sym, tp - o['trig'])} pips · 1:{r:g}")
+        rows.append(f"🏆 {name}  <code>{fmt(sym, tp)}</code>  · +{pts(sym, tp - o['trig'])} points · "
+                    f"+{usd_txt(sym, tp - o['trig'])} · 1:{r:g}")
+    prot = prot_rows(o)
+    if o.get("src"):                                 # a zone order: which zone, and the market open it was drawn at
+        what = ("📦 Order block (buy)" if o["dir"] == 1 else "📦 Order block (sell)") if o["src"] == "OB" else \
+               ("📍 Buy zone" if o["dir"] == 1 else "📍 Sell zone")
+        ar = ("أوردر بلوك شراء" if o["dir"] == 1 else "أوردر بلوك بيع") if o["src"] == "OB" else \
+             ("منطقة شراء ما انكسرت" if o["dir"] == 1 else "منطقة بيع ما انكسرت")
+        trend += (f"\n{what} <code>{fmt(sym, o['zlo'])}</code> – <code>{fmt(sym, o['zhi'])}</code> · "
+                  f"{o.get('sess', '').title()} open · {ar}")
+    if plan_params(sym, o["tf"]).get("weak"):        # a year of the three lost money in the tests
+        trend += "\n⚠️ Weak in the 3-year test (a losing year): trade it smaller · ضعيف بالتجربة، خفّف اللوت"
+    when = ""
+    if late:                                         # planned on a candle the bot caught up later
+        t_close = datetime.fromtimestamp(o["born_t"] + TF_SEC[o["tf"]], MSG_TZ).strftime("%H:%M")
+        when = f"🕒 <i>From the {o['tf'].upper()} candle of {t_close}, still waiting for its entry</i>\n"
     return (f"🔥 <b>PHOENIX HAZ SMC</b>  ·  <i>New signal · إشارة جديدة</i>\n{LINE}\n"
             f"{title(o)}\n{d} <b>{o['kind']}</b> — {KIND_AR.get(o['kind'], '')}\n{trend}\n\n"
-            + "\n".join(rows) +
-            f"\n\n📊 Trend <b>{bias_info['txt']}</b>\n      {bias_info['arrows']}\n"
-            f"⏳ Pending: waits for price to reach the entry\n"
-            f"💵 1 pip = {INSTRUMENTS[sym]['pip']:g} · ${money(sym, INSTRUMENTS[sym]['pip'], LOT_DEFAULT):,.2f} at lot {lot_for(sym, LOT_DEFAULT):g}\n"
+            + "\n".join(rows) + ("\n\n" + "\n".join(prot) if prot else "") +
+            f"\n\n📊 Trend <b>{bias_info['txt']}</b>\n      {bias_info['arrows']}\n" + when +
+            f"⏳ Pending: waits for price to reach the entry\n" + day_rules_txt(sym, o["tf"]) +
+            f"💵 1 point = {point(sym):g} · ${money(sym, point(sym), LOT_DEFAULT):,.2f} at lot {lot_for(sym, LOT_DEFAULT):g}"
+            + (" · move the stop when the bot says so (within the minute)" if MINUTES else
+               " · the stop is moved at a candle close" if REAL_STOP else "") + "\n"
             f"💡 <i>Enter a touch early, close a touch before the target.</i>" + footer())
+
+def day_rules_txt(sym, tf):
+    """The small-account day rules of this chart, one line (empty when there are none)."""
+    pp = plan_params(sym, tf)
+    tgt, ml = user_or_tested("DAY_TARGET_USD", pp, "day_target"), user_or_tested("DAY_MAX_LOSS_USD", pp, "day_max_loss")
+    if not tgt and not ml:
+        return ""
+    parts = ([f"target +${tgt:g}"] if tgt else []) + ([f"loss limit −${ml:g}"] if ml else [])
+    return f"🎯 Today on this chart: {' · '.join(parts)} (closed $), then done for the day\n"
+
+def msg_day_done(sym, tf, net, target, lot):
+    i = INSTRUMENTS[sym]
+    head = ("🎯 <b>Daily target reached</b> · وصلنا هدف النهار" if target else
+            "🛑 <b>Daily loss limit reached</b> · وصلنا حد الخسارة بالنهار")
+    sign = "+" if net >= 0 else "−"
+    return (f"{head}\n{LINE}\n{i['name']} {sym} · ⏱ {tf.upper()}\n"
+            f"💵 Today (closed): <b>{sign}${abs(net):,.2f}</b> at lot {lot:g}\n"
+            + ("✅ Close the open trades if that is your way, take the profit. No more orders on this pair today.\n"
+               "✅ سكّر الصفقات المفتوحة إذا هيك طريقتك، واسحب الربح. ما في أوامر جديدة عهالزوج اليوم."
+               if target else
+               "⏸ No more orders on this pair today; the open trades keep their stops.\n"
+               "⏸ ما في أوامر جديدة اليوم، والصفقات المفتوحة بتضل عستوباتها.") + footer())
 
 def msg_expired(o, reason, not_triggered):
     head = "🟣 <b>NOT TRIGGERED</b> ✖ · لم يتفعّل" if not_triggered else "⚪ <b>UPDATED</b>"
@@ -653,16 +962,17 @@ def msg_filled(o):
 
 def msg_tp(o, i, final):
     sym, r = o["sym"], o["rrs"][i]
-    gain = pips(sym, o["tps"][i] - o["trig"])
+    dist = o["tps"][i] - o["trig"]
     near = pct(o["adv"], o["risk"])
     extra = "" if final else f"\nMove your stop to entry. Next target <code>{fmt(sym, o['tps'][i + 1])}</code>."
-    return (f"✅ <b>TARGET HIT</b> · +{r:g}R · +{gain} pips 🎉\nمبروك، ضرب الهدف\n{html.escape(short(o))}{extra}\n\n"
+    return (f"✅ <b>TARGET HIT</b> · +{r:g}R · +{pts(sym, dist)} points · +{usd_txt(sym, dist)} 🎉\nمبروك، ضرب الهدف\n"
+            f"{html.escape(short(o))}{extra}\n\n"
             f"Closest it came to the stop: <b>{near}%</b> of the way." + joke(JOKES_TP, JOKES_TP_EN) + footer())
 
 def msg_sl(o):
     sym = o["sym"]
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
-    return (f"❌ <b>STOP LOSS HIT</b> · −1R · −{pips(sym, o['sl'] - o['trig'])} pips\n"
+    return (f"❌ <b>STOP LOSS HIT</b> · −1R · −{pts(sym, o['sl'] - o['trig'])} points · −{usd_txt(sym, o['sl'] - o['trig'])}\n"
             f"ضرب وقف الخسارة. خسارة صغيرة ومحسوبة، ومنكمّل بانضباط.\n{html.escape(short(o))}\n\n"
             f"Best it reached toward the target: <b>{best}%</b> of the way." + joke(JOKES_SL, JOKES_SL_EN) + footer())
 
@@ -675,28 +985,34 @@ def msg_be(o):
     return (f"🛡 <b>PROTECTED EXIT</b> · 0R · طلعت على الدخول بدون خسارة\n{html.escape(short(o))}\n\n"
             f"Price had reached <b>{best}%</b> of the way to the target, so the stop was at entry." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
 
+def where_txt(o, share):
+    """How far the trade has come: in $ at the lot shown and as a share of the way to the target."""
+    return f"price reached <b>+{usd_txt(o['sym'], o['fav'])}</b> ({share}% of the way to the target)"
+
 def msg_protect(o, share):
     sym = o["sym"]
     if o.get("locked") and o.get("lock_d", 0) > 0:          # break-even after costs: entry + spread + commission
         px = fmt(sym, o["lock_px"])
-        return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
+        return (f"🛡 <b>PROTECT YOUR TRADE</b> · {where_txt(o, share)}\n"
                 f"انقل الستوب لـ <code>{px}</code> (الدخول + الكوميشن والسبريد)\n{html.escape(short(o))}\n\n"
                 f"Move your stop to <code>{px}</code> (entry + costs): from here the trade can not turn into a loss." + footer())
-    return (f"🛡 <b>PROTECT YOUR TRADE</b> · price is <b>{share}%</b> of the way to the target\n"
+    return (f"🛡 <b>PROTECT YOUR TRADE</b> · {where_txt(o, share)}\n"
             f"انقل الستوب على سعر الدخول\n{html.escape(short(o))}\n\n"
             f"Move your stop to entry: from here the trade can not turn into a loss." + footer())
 
 def msg_lock(o, share):
     sym = o["sym"]; d = o["lock_d"]
     usd = money(sym, d, LOCK_LOT)
-    return (f"🔒 <b>LOCK PROFIT</b> · price is <b>{share}%</b> of the way to the target\n"
+    return (f"🔒 <b>LOCK PROFIT</b> · {where_txt(o, share)}\n"
             f"انقل الستوب لـ <code>{fmt(sym, o['lock_px'])}</code> وقفّل ربح\n{html.escape(short(o))}\n\n"
-            f"Move your stop to <code>{fmt(sym, o['lock_px'])}</code>: +{pips(sym, d)} pips locked (≈ ${usd:,.2f} at lot {lot_for(sym, LOCK_LOT):g})." + footer())
+            f"Move your stop to <code>{fmt(sym, o['lock_px'])}</code>: +{pts(sym, d)} points locked "
+            f"(≈ ${usd:,.2f} at lot {lot_for(sym, LOCK_LOT):g})." + footer())
 
 def msg_locked(o):
     sym = o["sym"]; d = o.get("lock_d", 0.0)
     best = pct(o["fav"], abs(o["tps"][0] - o["trig"]))
-    return (f"🔒 <b>PROFIT LOCKED EXIT</b> · +{pips(sym, d)} pips ✅\nطلعت بربح مقفول\n{html.escape(short(o))}\n\n"
+    return (f"🔒 <b>PROFIT LOCKED EXIT</b> · +{pts(sym, d)} points · +{usd_txt(sym, d)} ✅\nطلعت بربح مقفول\n"
+            f"{html.escape(short(o))}\n\n"
             f"Price reached <b>{best}%</b> of the way to the target, then came back to the locked stop." + joke(JOKES_SAFE, JOKES_SAFE_EN) + footer())
 
 def sel_text(sub):
@@ -744,7 +1060,7 @@ def msg_welcome(name):
             "🎯 Every order with the price now, entry, stop and target\n"
             "⚡ Live updates: filled, protect, target, stop\n"
             "☀️ A morning brief and 🌙 a market-close summary\n"
-            "📊 /report: today, week and month in pips and $\n\n"
+            "📊 /report: today, week and month in points and $\n\n"
             "<b>How to start · كيف تبلّش</b>\n"
             "1️⃣ Choose instruments and timeframes below · اختار الأدوات والفريمات تحت\n"
             "2️⃣ Set your lot: /lot 0.1 · حدّد اللوت\n"
@@ -778,12 +1094,14 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price. Stop to entry + costs at 10% of the way, lock 5% at 20%, lock 30% at 50%.\n\n"
+            f"🛡 Risk 1–2% per trade, wait for your price. Move the stop when the bot says so: every signal shows where "
+            f"(price and $), and the message comes within the minute. A $200 account: take gold 5M and Nasdaq 1H, and stop a "
+            f"chart when the bot says its daily target is reached.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
     """Every instrument with every timeframe (Gold 5M, Gold 15M ...), then each timeframe for all
-    instruments together, then the total. Money in $ (pips of different instruments can not be added)."""
+    instruments together, then the total. Money in $ (points of different instruments can not be added)."""
     syms = [x for x in (sub["syms"] or list(INSTRUMENTS)) if x in INSTRUMENTS]
     tfs = [t for t in TF_SEC if t in sub["tfs"] and t in AVAILABLE_TFS]
     has = lambda sm: any(sm[k]["win"] or sm[k]["loss"] or sm[k]["be"] for k in ("day", "week", "month"))
@@ -800,7 +1118,7 @@ def stats_text(sub, ledger, ref_ts):
             blocks.append(f"{head}  <i>· no closed trades this month</i>")
             continue
         mo = allm["month"]
-        parts = [f"{head}  <i>· month {mo['usd']:+,.2f}$ · {mo['pips']:+,.0f} pips</i>"]
+        parts = [f"{head}  <i>· month {mo['usd']:+,.2f}$ · {mo['pts']:+,.0f} points</i>"]
         for tf in tfs:
             sm = summarize(ledger, [sym], [tf], sub["lot"], ref_ts)
             if has(sm):
@@ -841,9 +1159,9 @@ HELP = (f"🔥 <b>PHOENIX HAZ SMC</b>\n{LINE}\n/start · choose instruments and 
         "/status · what you receive\n/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n"
         "/lang en · English only (/lang ar · Arabic + English)\n/stop · pause all signals\n\n" + SIGN)
 
-def msg_dayend(o, r, gain_pips):
+def msg_dayend(o, r, gain_pts):
     s = "+" if r >= 0 else "−"
-    return (f"⏹ <b>TIME LIMIT</b> · ≈ {s}{abs(r):.1f}R ({s}{gain_pips} pips)\nالصفقة طوّلت كتير، سكّرها على السوق\n"
+    return (f"⏹ <b>TIME LIMIT</b> · ≈ {s}{abs(r):.1f}R ({s}{gain_pts} points)\nالصفقة طوّلت كتير، سكّرها على السوق\n"
             f"{html.escape(short(o))}" + footer())
 
 BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Prices now"), ("report", "Today, week, month"),
@@ -1208,8 +1526,10 @@ class Engine:
                         OFFSETS[sym] = x["v"]
                 for o in d.get("orders", []):
                     o.setdefault("inval", o.get("sl"))
+                # orders planned on missed candles (late) stay too: one already open counts in the results like
+                # the indicator's, even after a restart
                 self.orders = [o for o in d.get("orders", []) if "tps" in o and
-                               (o.get("msgs") or o["state"] not in (PENDING, OPEN))]
+                               (o.get("msgs") or o.get("late") or o["state"] not in (PENDING, OPEN))]
             except Exception as e:
                 log.warning("state not loaded: %s", e)
 
@@ -1277,8 +1597,13 @@ class Engine:
 
     def book(self, o, bar, exit_px=None):
         dist, cost, td = realized(o, exit_px), cost_price(o["sym"]), trading_day(bar.t).isoformat()
-        self.ledger.append({"t": bar.t, "td": td, "sym": o["sym"], "tf": o["tf"], "dist": dist, "cost": cost,
-                            "oc": outcome(o, dist, cost)})
+        oc = outcome(o, dist, cost)
+        self.ledger.append({"t": bar.t, "td": td, "sym": o["sym"], "tf": o["tf"], "dist": dist, "cost": cost, "oc": oc})
+        ps = self.pair(o["sym"], o["tf"])                 # the pair's day so far (for the daily rule)
+        if ps.get("dday") != td:
+            ps.update(dday=td, dnet=0.0, dloss=0)
+        ps["dnet"] += money(o["sym"], dist - cost, LOT_DEFAULT)
+        ps["dloss"] += 1 if oc == -1 else 0
         cutoff = bar.t - 100 * 86400
         self.ledger = [e for e in self.ledger if e["t"] > cutoff]
 
@@ -1294,11 +1619,264 @@ class Engine:
                 o["be"] = True
             self.say(o, msg_tp(o, i, final))
 
+    def day_locked(self, sym, tf, t):
+        return self.pair(sym, tf).get("lock_day") == trading_day(t).isoformat()
+
+    def _day_check(self, sym, tf, t):
+        """Daily rules, checked after each candle (minute): the daily target / loss limit of a small account (closed
+        $ today), and the old rule (stop once the day is in profit, or after N losses). When one is reached the pair's
+        waiting orders are removed and no new ones come until the next day."""
+        pp = plan_params(sym, tf)
+        green, max_l = pp.get("day_green", DAY_GREEN), pp.get("day_losses", DAY_LOSSES)
+        if DAY_RULE == "off":
+            green, max_l = False, 0
+        elif DAY_RULE == "on":
+            green = True
+        tgt, mloss = user_or_tested("DAY_TARGET_USD", pp, "day_target"), user_or_tested("DAY_MAX_LOSS_USD", pp, "day_max_loss")
+        ps, td = self.pair(sym, tf), trading_day(t).isoformat()
+        if (not green and not max_l and not tgt and not mloss) or ps.get("dday") != td or ps.get("lock_day") == td:
+            return
+        lot = lot_for(sym, LOT_DEFAULT)
+        why = (f"daily target reached (+${ps['dnet']:,.2f} at lot {lot:g}): no more orders on this pair today"
+               if tgt and ps["dnet"] >= tgt else
+               f"daily loss limit reached (-${-ps['dnet']:,.2f} at lot {lot:g}): no more orders on this pair today"
+               if mloss and ps["dnet"] <= -mloss else
+               "the day is in profit: no more orders on this pair today" if green and ps["dnet"] > 1e-9 else
+               f"{ps['dloss']} losses today: no more orders on this pair today" if max_l and ps["dloss"] >= max_l else None)
+        if why:
+            ps["lock_day"] = td
+            for q in self.orders:
+                if q["sym"] == sym and q["tf"] == tf and q["state"] == PENDING:
+                    self.expire(q, why)
+            if (tgt or mloss) and abs(time.time() - t) < 900 and self.bc.targets(sym, tf):     # live only
+                self.bc.send_new(sym, tf, msg_day_done(sym, tf, ps["dnet"], tgt and ps["dnet"] >= tgt, lot))
+
+    def _manage(self, sym, tf, mine, sb, ps):
+        """One candle (a minute, or the whole chart candle) for the waiting and open orders `mine` of a pair: first
+        the entries (and a breakout's target in the minute it was filled), then the open trades, then the daily rule."""
+        for o in mine:
+            d = o["dir"]
+            if o["state"] == PENDING:
+                filled = (sb.h >= o["lo"] if o["is_stop"] else sb.l <= o["hi"]) if d == 1 else \
+                         (sb.l <= o["hi"] if o["is_stop"] else sb.h >= o["lo"])
+                if filled:
+                    o.update(state=OPEN, fill_t=sb.t, fav=0.0, adv=0.0, hits=0, be=False)
+                    for q in mine:
+                        if q is not o and q["plan"] == o["plan"] and q["state"] == PENDING:
+                            self.expire(q, "another order of this plan was filled")
+                    self.say(o, msg_filled(o))
+                    # a breakout order must have crossed its entry to reach the target, so count a same-bar target
+                    # (unless the stop was touched in that bar too: the order of events is unknown, so stay careful)
+                    sl_touch = (d == 1 and sb.l <= o["sl"]) or (d == -1 and sb.h >= o["sl"])
+                    if o["is_stop"] and not sl_touch:
+                        self._hits(o, sb, d)
+        for o in mine:
+            d = o["dir"]
+            if o["state"] == OPEN and sb.t > o.get("fill_t", 0):
+                trig = o["trig"]
+                fav = (sb.h - trig) if d == 1 else (trig - sb.l)
+                adv = (trig - sb.l) if d == 1 else (sb.h - trig)
+                stop = o["lock_px"] if o.get("locked") else trig if o["be"] else o["sl"]
+                if (d == 1 and sb.l <= stop) or (d == -1 and sb.h >= stop):
+                    o["state"] = LOCK_HIT if o.get("locked") else BE_HIT if o["be"] else SL_HIT
+                    if o["state"] == SL_HIT:
+                        ps.setdefault("cool", {})[str(d)] = sb.t + COOLDOWN_MIN * 60
+                    self.book(o, sb)
+                    self.say(o, msg_locked(o) if o["state"] == LOCK_HIT else msg_be(o) if o["be"] else msg_sl(o))
+                else:
+                    o["fav"], o["adv"] = max(o["fav"], fav), max(o["adv"], adv)
+                    self._hits(o, sb, d)
+                    if o["state"] == OPEN:
+                        # protection: the stop only moves forward, and only to where it can really be put at this close
+                        tg = abs(o["tps"][0] - trig)
+                        floor = cost_price(sym) if BE_PLUS_COST else 0.0   # spread + commission: a protected exit is no loss
+                        if floor > 0 and o["fav"] < 2 * floor:
+                            floor = 0.0                               # price not far enough yet: plain entry first
+                        # a buy's stop must be under the bid (the close); a sell's stop over the ask (close + spread)
+                        room = ((sb.c - trig) * d - (INSTRUMENTS[sym].get("spread", 0.0) if d == -1 else 0.0)
+                                if REAL_STOP else float("inf"))
+                        want_be, want_d = False, None
+                        pp = plan_params(sym, o["tf"])
+                        if pp.get("protect", PROTECT) == "usd":
+                            be_d = usd_px(sym, pp.get("be_usd", BE_USD))
+                            at_d, lk_d = usd_px(sym, pp.get("lock_at_usd", LOCK_AT_USD)), usd_px(sym, pp.get("lock_usd", LOCK_USD))
+                            want_be = be_d > 0 and o["fav"] >= be_d                 # step 1: +$2 -> entry (+ costs)
+                            if at_d > 0 and lk_d > 0 and o["fav"] >= at_d:
+                                want_d = lk_d                                      # step 2: +$5 -> lock $5
+                        else:
+                            be_r = pp.get("be_at_r", BE_AT_R)
+                            want_be = be_r > 0 and o["fav"] >= be_r * tg
+                            for at, to in ((pp.get("lock1_at", LOCK1_AT), pp.get("lock1_to", LOCK1_TO)),
+                                           (pp.get("lock2_at", LOCK2_AT), pp.get("lock2_to", LOCK2_TO))):
+                                if at > 0 and to > 0 and o["fav"] >= at * tg:
+                                    want_d = to * tg                               # steps 2 and 3 of the way to the target
+                        goal = None                                   # how far into profit the stop should be (0 = entry)
+                        if want_be or o["be"]:
+                            goal = floor                              # entry, or entry + costs once price is far enough
+                        if want_d is not None:
+                            goal = max(goal or 0.0, want_d, floor)    # a locked stop is never below the costs
+                        if goal is not None:
+                            now_d = min(goal, room)                   # never beyond the price (less now, more later)
+                            cur = o.get("lock_d", 0.0) if o.get("locked") else (0.0 if o["be"] else None)
+                            if now_d >= 0 and (cur is None or now_d > cur + 1e-12):
+                                if now_d > 1e-12:
+                                    o.update(be=True, locked=True, lock_d=now_d, lock_px=trig + d * now_d)
+                                    self.say(o, msg_lock(o, pct(o["fav"], tg)) if now_d > floor + 1e-12
+                                             else msg_protect(o, pct(o["fav"], tg)))
+                                else:
+                                    o["be"] = True                    # stop to entry
+                                    self.say(o, msg_protect(o, pct(o["fav"], tg)))
+        self._day_check(sym, tf, sb.t)
+
+    def manage_minutes(self, sym, m1bars, until=None):
+        """Live: follow the waiting and open orders of `sym` on the 1-minute candles as they close, so a stop move or an
+        exit is sent within the minute. Each order starts at the first minute after the candle it was planned in and
+        sees each minute once (the backtest does the same inside each chart candle). until = only minutes that closed by
+        then (the chart candle about to be planned)."""
+        act = [o for o in self.orders if o["sym"] == sym and o["state"] in (PENDING, OPEN)]
+        if not act:
+            return
+        first = min(o.get("m1_next", self.pair(sym, o["tf"])["last_t"] + TF_SEC[o["tf"]]) for o in act)
+        for b in m1bars[bisect.bisect_left([x.t for x in m1bars], first):]:
+            if until is not None and b.t + 60 > until:
+                break
+            for tf in sorted({o["tf"] for o in self.orders if o["sym"] == sym and o["state"] in (PENDING, OPEN)}):
+                ps = self.pair(sym, tf)
+                mine = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)
+                        and o.get("m1_next", ps["last_t"] + TF_SEC[tf]) <= b.t]
+                if mine:
+                    self._manage(sym, tf, mine, b, ps)
+                    for o in mine:
+                        o["m1_next"] = b.t + 60
+
+    # ── buy / sell zones of the market session
+    @staticmethod
+    def _zone_break(z, c):
+        if not z["broken"] and ((z["d"] == 1 and c < z["lo"]) or (z["d"] == -1 and c > z["hi"])):
+            z["broken"] = True
+
+    @staticmethod
+    def _zone_use(zs, z):
+        for y in zs:                                         # this zone and every zone the same way that overlaps it
+            if y["d"] == z["d"] and y["lo"] <= z["hi"] and y["hi"] >= z["lo"]:
+                y["used"] = True
+
+    def _zones_update(self, sym, tf, bars, ps, use):
+        """At each market open (Tokyo, London, New York) the zones of the last day that are still not broken are taken,
+        from the candle the market opened in (also after a restart); every later close beyond a zone breaks it."""
+        bar, sec = bars[-1], TF_SEC[tf]
+        lo = last_open(bar.t + sec)
+        if lo is None:
+            return
+        T, name = lo
+        if ps.get("zs_T") == T:
+            for z in ps.get("zs") or []:
+                self._zone_break(z, bar.c)
+            return
+        zs, idx = [], None
+        for i in range(len(bars) - 1, -1, -1):              # the candle the market opened in
+            if bars[i].t < T <= bars[i].t + sec:
+                idx = i
+                break
+            if bars[i].t + sec < T:
+                break
+        if idx is not None:
+            sub = bars if idx == len(bars) - 1 else bars[:idx + 1]
+            zs = find_zones(sub, calc_atr(sub), use)
+            for z in zs:
+                z.update(used=False, broken=False)
+            for b in bars[idx + 1:]:
+                for z in zs:
+                    self._zone_break(z, b.c)
+        live = {(z["d"], z["src"], z["t"]) for z in zs if not z["broken"]}
+        for o in self.orders:                                # waiting zone orders: kept while their zone is still there
+            if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING and o.get("src"):
+                k = (o["dir"], o["src"], o.get("zt"))
+                if k in live:
+                    for z in zs:
+                        if (z["d"], z["src"], z["t"]) == k:
+                            self._zone_use(zs, z)
+                else:
+                    self.expire(o, f"new market open ({name.title()}): its zone is no longer there")
+        ps.update(zs_T=T, zs_name=name, zs=zs)
+
+    def _plan_zones(self, sym, tf, bars, atr, pp, bias_info, ema_dir, mom_dir, ps, is_latest, replay, day):
+        """Zone orders of this market session: a BUY LIMIT at the top of the nearest buy zone under the price and a SELL
+        LIMIT at the bottom of the nearest sell zone above it, one waiting each way; each zone is used once."""
+        bar, zs = bars[-1], ps["zs"]
+        live = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)]
+        pend = [o for o in live if o["state"] == PENDING]
+        open_now = [o for o in live if o["state"] == OPEN]
+        open_dirs = {o["dir"] for o in open_now}
+        safe_dirs = {dd for dd in open_dirs if pp["stack"] > 0 and sum(1 for o in open_now if o["dir"] == dd) < pp["stack"]
+                     and all(o["be"] for o in open_now if o["dir"] == dd)}
+        bias = bias_info["now"]
+        sp = max(atr * SPREAD_PCT / 100.0, INSTRUMENTS[sym]["tick"])
+        slD = atr * (float(pp.get("zsl", ZONE_SL)) + SWEEP_BUFFER)
+        for d in (1, -1):
+            if any(o["dir"] == d and o.get("src") for o in pend):
+                continue                                     # one zone order waiting each way
+            if -d in open_dirs or (d in open_dirs and d not in safe_dirs):
+                continue                                     # never both directions; the same way only when stacking allows
+            if not zone_allowed(d, bias, ema_dir, mom_dir, int(pp.get("ztrend", ZONE_TREND))):
+                continue
+            if ps.get("cool", {}).get(str(d), 0) > bar.t:
+                continue
+            cands = [z for z in zs if z["d"] == d and not z["broken"] and not z["used"]
+                     and (z["hi"] < bar.c if d == 1 else z["lo"] > bar.c)]
+            if not cands:
+                continue
+            z = min(cands, key=lambda y: (abs((y["hi"] if d == 1 else y["lo"]) - bar.c), -y["t"]))
+            n = zone_order(d, z, sp, slD, pp["zrr"], bias)
+            if abs(n["trig"] - bar.c) > MAX_DIST_ATR * atr:
+                continue                                     # still far away: it may be taken later
+            if any(q["dir"] == -d and abs(q["trig"] - n["trig"]) <= CONFLICT_ATR * atr for q in pend):
+                continue                                     # an order waits the other way in this area
+            self.stats["built"] += 1
+            why = "target smaller than the stop" if n["rrs"][0] < MIN_RR else unrealistic(n, atr, bias_info.get("datr"), 0, tf)
+            cmax = pp.get("cost_max", COST_MAX)
+            if not why and cmax > 0 and cost_price(sym) > cmax * n["risk"]:
+                why = "quiet market: spread + commission too big a share of the stop"
+            rmax = user_or_tested("MAX_RISK_USD", pp, "max_risk")
+            if not why and rmax > 0 and money(sym, n["risk"], LOT_DEFAULT) > rmax:
+                why = "stop too big for the account"
+            self._zone_use(zs, z)
+            if why:
+                self.why(why)
+                continue
+            if (MAX_PER_PAIR_DAY and ps.get("sent", 0) >= MAX_PER_PAIR_DAY) or \
+                    (MAX_SIGNALS_PER_DAY and self.sent.get(day, 0) >= MAX_SIGNALS_PER_DAY):
+                self.stats["capped"] += 1
+                continue
+            ps["seq"] += 1
+            n.update(sym=sym, tf=tf, plan=f"{sym}{tf}{ps['seq']}", state=PENDING, born_t=bar.t, fill_t=0, fav=0.0, adv=0.0,
+                     hits=0, be=False, m1_next=bar.t + TF_SEC[tf], src=z["src"], sess=ps.get("zs_name", ""), zt=z["t"],
+                     zlo=z["lo"], zhi=z["hi"])
+            if is_latest and not replay:
+                msgs = self.bc.send_new(sym, tf, msg_signal(n, bias_info, bar.c))
+                if not msgs:                                 # Telegram refused: try this zone again on the next bar
+                    z["used"] = False
+                    continue
+                n["msgs"] = msgs
+                ps["sent"] = ps.get("sent", 0) + 1
+                self.sent[day] = self.sent.get(day, 0) + 1
+            else:
+                n["late"] = True
+            self.orders.append(n)
+            pend.append(n)
+
     # ── one completed bar
-    def process_bar(self, sym, tf, bars, bias_info, is_latest):
+    def process_bar(self, sym, tf, bars, bias_info, is_latest, replay=False, subbars=None):
+        """is_latest = the newest closed candle: new orders are planned and sent. replay = a candle missed between two
+        runs, caught up now: it is planned the same way (like the indicator, which plans on every candle), but its new
+        orders are only kept; the ones still waiting are sent at the newest candle."""
         bar, ps = bars[-1], self.pair(sym, tf)
+        plan_ok = is_latest or (replay and REPLAY_MISSED and len(bars) > 60)
         by_tf = bias_info.get("by_tf", {})
         bias_info = dict(bias_info, now=by_tf.get(tf, bias_info["now"]), txt=bias_info.get("txt_by_tf", {}).get(tf, bias_info["txt"]))
+        al = int(plan_params(sym, tf).get("align", 0) or 0)
+        if al in ALIGN_KEYS and bias_info.get("bs"):          # stricter trend: the higher timeframes must all agree
+            bias_info = dict(bias_info, now=aligned_trend(bias_info["bs"], tf, al))
         mins, day = ny_parts(bar.t)
         tick = INSTRUMENTS[sym]["tick"]
         mine = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)]
@@ -1306,59 +1884,12 @@ class Engine:
         if ps["day"] != day:                                         # new New-York day
             ps.update(day=day, last_slot=-1, sent=0)
 
-        # 1) manage orders (wicks count: a touch of the target or the stop is enough)
-        for o in mine:
-            d = o["dir"]
-            if o["state"] == PENDING:
-                filled = (bar.h >= o["lo"] if o["is_stop"] else bar.l <= o["hi"]) if d == 1 else \
-                         (bar.l <= o["hi"] if o["is_stop"] else bar.h >= o["lo"])
-                if filled:
-                    o.update(state=OPEN, fill_t=bar.t, fav=0.0, adv=0.0, hits=0, be=False)
-                    for q in mine:
-                        if q is not o and q["plan"] == o["plan"] and q["state"] == PENDING:
-                            self.expire(q, "another order of this plan was filled")
-                    self.say(o, msg_filled(o))
-                    # a breakout order must have crossed its entry to reach the target, so count a same-bar target
-                    # (unless the stop was touched in that bar too: the order of events is unknown, so stay careful)
-                    sl_touch = (d == 1 and bar.l <= o["sl"]) or (d == -1 and bar.h >= o["sl"])
-                    if o["is_stop"] and not sl_touch:
-                        self._hits(o, bar, d)
-            elif o["state"] == OPEN and bar.t > o.get("fill_t", 0):
-                trig = o["trig"]
-                fav = (bar.h - trig) if d == 1 else (trig - bar.l)
-                adv = (trig - bar.l) if d == 1 else (bar.h - trig)
-                stop = o["lock_px"] if o.get("locked") else trig if o["be"] else o["sl"]
-                if (d == 1 and bar.l <= stop) or (d == -1 and bar.h >= stop):
-                    o["state"] = LOCK_HIT if o.get("locked") else BE_HIT if o["be"] else SL_HIT
-                    if o["state"] == SL_HIT:
-                        ps.setdefault("cool", {})[str(d)] = bar.t + COOLDOWN_MIN * 60
-                    self.book(o, bar)
-                    self.say(o, msg_locked(o) if o["state"] == LOCK_HIT else msg_be(o) if o["be"] else msg_sl(o))
-                else:
-                    o["fav"], o["adv"] = max(o["fav"], fav), max(o["adv"], adv)
-                    self._hits(o, bar, d)
-                    if o["state"] == OPEN:
-                        # protection in 3 steps; several can happen in one bar, the stop only moves forward
-                        tg = abs(o["tps"][0] - trig)
-                        floor = cost_price(sym) if BE_PLUS_COST else 0.0   # spread + commission: a protected exit is no loss
-                        if floor > 0 and o["fav"] < 2 * floor:
-                            floor = 0.0                               # price not far enough yet: plain entry first
-                        protect = False
-                        if not o["be"] and BE_AT_R > 0 and o["fav"] >= BE_AT_R * tg:
-                            o["be"] = True                            # step 1: stop to entry (+ costs)
-                            protect = True
-                        new_d = None
-                        for at, to in ((LOCK1_AT, LOCK1_TO), (LOCK2_AT, LOCK2_TO)):
-                            if at > 0 and to > 0 and o["fav"] >= at * tg and max(to * tg, floor) > o.get("lock_d", 0.0) + 1e-12:
-                                new_d = max(to * tg, floor)           # steps 2 and 3: stop into profit (never below the costs)
-                        to_floor = False
-                        if new_d is None and o["be"] and floor > o.get("lock_d", 0.0) + 1e-12:
-                            new_d, to_floor = floor, True             # step 1 with costs: entry + spread + commission
-                        if new_d is not None:
-                            o.update(be=True, locked=True, lock_d=new_d, lock_px=trig + d * new_d)
-                            self.say(o, msg_protect(o, pct(o["fav"], tg)) if to_floor else msg_lock(o, pct(o["fav"], tg)))
-                        elif protect:
-                            self.say(o, msg_protect(o, pct(o["fav"], tg)))
+        # 1) manage orders (wicks count: a touch of the target or the stop is enough). With the minute candles of
+        #    this candle (subbars), orders are followed minute by minute: fills, targets and stops in the order
+        #    they happened, and a stop is moved at the close of the minute the price reached the step in - the
+        #    way it is done by hand from the live profit in MT5 (without them: at the close of this candle)
+        for sb in (subbars if subbars is not None else [bar]):
+            self._manage(sym, tf, mine, sb, ps)
 
         # 2) housekeeping: nothing is closed at the end of the session; only very old orders are dropped
         for o in self.orders:
@@ -1370,38 +1901,45 @@ class Engine:
                     o["state"] = DAY_END
                     self.book(o, bar, bar.c)
                     r = (bar.c - o["trig"]) * o["dir"] / max(o["risk"], 1e-9)
-                    self.say(o, msg_dayend(o, r, pips(sym, bar.c - o["trig"])))
+                    self.say(o, msg_dayend(o, r, pts(sym, bar.c - o["trig"])))
+        self._day_check(sym, tf, bar.t)
+
+        # 2b) buy / sell zones: taken at each market open (Tokyo, London, New York), broken by a close beyond them
+        atr = calc_atr(bars)
+        pp = plan_params(sym, tf)
+        if pp["on"] and pp.get("zones"):
+            self._zones_update(sym, tf, bars, ps, int(pp["zones"]))
 
         # 3) re-check ONLY the unfilled orders. A pending order stays while its zone is still valid,
         #    so when the market comes back to test the same zone the order is still there.
-        atr = calc_atr(bars)
-        pp = plan_params(sym, tf)
         in_win = pp["on"] and pp["start"] <= mins < pp["end"]          # trading hours of this instrument + timeframe
         eff = max(REFRESH_MIN, TF_SEC[tf] / 60.0)
         slot = int((mins - pp["start"]) // eff) if in_win else -1
         spike = bool(atr) and (bar.h - bar.l) > SPIKE_ATR * atr
-        if spike and is_latest and in_win:
+        if spike and plan_ok and in_win:
             self.stats["spike"] += 1                                # news-size candle: wait for the next bar
-        elif is_latest and in_win and atr and len(bars) > pp["range"]:
+        elif plan_ok and in_win and atr and len(bars) > pp["range"] and not self.day_locked(sym, tf, bar.t):
             prune_now = slot != ps["last_slot"]
             if prune_now:
                 ps["last_slot"] = slot
             live = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)]
             ema_dir, mom_dir = local_dirs(bars, atr)
+            keep_z = bool(pp.get("zkeep"))                          # zone orders wait for their zone (tested setting)
             for p in [o for o in live if o["state"] == PENDING]:    # every bar: the chart now runs hard against it
-                if ema_dir == -p["dir"] and mom_dir == -p["dir"]:
+                if ema_dir == -p["dir"] and mom_dir == -p["dir"] and not (keep_z and p.get("src")):
                     self.expire(p, "the market turned against it (falling for a buy, rising for a sell)")
             if prune_now:                                           # re-check unfilled orders only
                 for p in [o for o in live if o["state"] == PENDING]:
                     d = p["dir"]
                     if (d == 1 and bar.c < p["inval"]) or (d == -1 and bar.c > p["inval"]):
                         self.expire(p, "price closed beyond its invalidation level")
-                    elif bias_info["now"] == -d:
+                    elif bias_info["now"] == -d and not (keep_z and p.get("src")):
                         self.expire(p, "the trend turned against it")
                     elif abs(p["trig"] - bar.c) > STICKY_MAX_ATR * atr:
                         self.expire(p, "price moved far away")
             pend = [o for o in live if o["state"] == PENDING]
-            have = {p["kind"] for p in pend}
+            have = {p["kind"] for p in pend if not p.get("src")}
+            zpend = [p for p in pend if p.get("src")]
             open_now = [o for o in live if o["state"] == OPEN]
             open_dirs = {o["dir"] for o in open_now}
             # stacking (tested per instrument and timeframe): one more trade the SAME way when every open trade
@@ -1410,7 +1948,7 @@ class Engine:
                          and all(o["be"] for o in open_now if o["dir"] == dd)}
             win = bars[-pp["range"]:]
             hi, lo = max(b.h for b in win), min(b.l for b in win)
-            if hi - lo >= atr and self.bc.targets(sym, tf):
+            if pp.get("rng", True) and hi - lo >= atr and self.bc.targets(sym, tf):     # rng off = zone orders only
                 fake_up, fake_dn = sweep_flags(bars, pp["range"])
                 built = build_orders(atr, hi, lo, bar.c, bias_info["now"], tick, pp["rr"], ema_dir, mom_dir, fake_up, fake_dn,
                                      sl_mult=pp["sl"], limits=pp["limits"], mixed=pp["mixed"])
@@ -1427,6 +1965,8 @@ class Engine:
                 for n in built:
                     if n["kind"] in have or -n["dir"] in open_dirs or (n["dir"] in open_dirs and n["dir"] not in safe_dirs):
                         continue                                    # already waiting, or a trade is open (never both directions)
+                    if any(q["dir"] == -n["dir"] and abs(q["trig"] - n["trig"]) <= CONFLICT_ATR * atr for q in zpend):
+                        continue                                    # a zone order waits the other way in this area
                     if n["rrs"][0] < MIN_RR:
                         self.stats["rr_skip"] += 1
                     elif ps.get("cool", {}).get(str(n["dir"]), 0) > bar.t:
@@ -1435,6 +1975,12 @@ class Engine:
                         self.stats["dist_skip"] += 1
                     else:
                         why = unrealistic(n, atr, bias_info.get("datr"), mins, tf)
+                        cmax = pp.get("cost_max", COST_MAX)
+                        if not why and cmax > 0 and cost_price(sym) > cmax * n["risk"]:
+                            why = "quiet market: spread + commission too big a share of the stop"
+                        rmax = user_or_tested("MAX_RISK_USD", pp, "max_risk")
+                        if not why and rmax > 0 and money(sym, n["risk"], LOT_DEFAULT) > rmax:
+                            why = "stop too big for the account"
                         if why:
                             self.why(why)
                         else:
@@ -1447,18 +1993,34 @@ class Engine:
                             self.stats["capped"] += 1
                             continue
                         n.update(sym=sym, tf=tf, plan=f"{sym}{tf}{ps['seq']}", state=PENDING, born_t=bar.t, fill_t=0,
-                                 fav=0.0, adv=0.0, hits=0, be=False)
-                        msgs = self.bc.send_new(sym, tf, msg_signal(n, bias_info, bar.c))
-                        if not msgs:                                  # Telegram refused: forget it and retry on the next bar
-                            continue
-                        n["msgs"] = msgs
+                                 fav=0.0, adv=0.0, hits=0, be=False, m1_next=bar.t + TF_SEC[tf])
+                        if is_latest and not replay:
+                            msgs = self.bc.send_new(sym, tf, msg_signal(n, bias_info, bar.c))
+                            if not msgs:                              # Telegram refused: forget it and retry on the next bar
+                                continue
+                            n["msgs"] = msgs
+                            ps["sent"] = ps.get("sent", 0) + 1
+                            self.sent[day] = self.sent.get(day, 0) + 1
+                        else:
+                            n["late"] = True                          # a missed candle: sent later, if still waiting
                         for q in self.orders:                       # the new order replaces an opposite one waiting in the same area
                             if (q["sym"] == sym and q["tf"] == tf and q["state"] == PENDING and q["dir"] == -n["dir"]
-                                    and abs(q["trig"] - n["trig"]) <= CONFLICT_ATR * atr):
+                                    and not q.get("src") and abs(q["trig"] - n["trig"]) <= CONFLICT_ATR * atr):
                                 self.expire(q, f"replaced by a {n['kind']}: the market changed direction")
+                        self.orders.append(n)
+            if pp.get("zones") and ps.get("zs") and self.bc.targets(sym, tf):
+                self._plan_zones(sym, tf, bars, atr, pp, bias_info, ema_dir, mom_dir, ps, is_latest, replay, day)
+
+        # 4) orders planned on missed candles: the ones still waiting for their entry are sent now (the others were
+        #    filled, closed or removed while the bot was catching up; they count in the results like the indicator's)
+        if is_latest and not replay:
+            for o in self.orders:
+                if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING and o.get("late") and not o.get("msgs"):
+                    msgs = self.bc.send_new(sym, tf, msg_signal(o, bias_info, bar.c, late=True))
+                    if msgs:
+                        o["msgs"] = msgs
                         ps["sent"] = ps.get("sent", 0) + 1
                         self.sent[day] = self.sent.get(day, 0) + 1
-                        self.orders.append(n)
 
         ps["last_t"] = bar.t
         self.orders = [o for o in self.orders if o["state"] in (PENDING, OPEN) or o["born_t"] > bar.t - 3 * 86400]
@@ -1644,19 +2206,44 @@ class Engine:
             self.save()
 
 # ───────────────────────────── live loop ─────────────────────────────
+HTF_SEC = {"1d": 86400, "4h": 14400, "1h": 3600, "15m": 900}
+
 def bias_info_for(sym, now, cache):
     c = cache.get(sym)
     if c and now - c["ts"] < 600:
         return c
-    bs, datr = {}, None
+    bs, datr, htf = {}, None, {}
     for tf in ("1d", "4h", "1h", "15m"):
         try:
             bars_tf = get_candles(sym, tf, now)
+            htf[tf] = bars_tf
             bs[tf] = bias_from_bars(bars_tf)
             if tf == "1d":
                 datr = calc_atr(bars_tf)
         except Exception as e:
             log.warning("bias %s %s: %s", sym, tf, e); bs[tf] = 0
+    info = make_info(bs, datr, now)
+    info["htf"] = htf                                 # kept to rebuild the trend of a missed candle (bias_info_at)
+    cache[sym] = info
+    return info
+
+def bias_info_at(sym, t, cache, fallback):
+    """The trend as it was at time t (the close of a missed candle), from the higher-timeframe candles already read:
+    only the candles that had closed by then count, the way the indicator saw it on that candle."""
+    c = cache.get(sym) or {}
+    htf = c.get("htf") or {}
+    if len(htf) < len(HTF_SEC) or t >= c.get("ts", 0):     # nothing read, or read before that candle closed
+        return fallback
+    bs, datr = {}, fallback.get("datr")
+    for tf, sec in HTF_SEC.items():
+        closed = [b for b in htf[tf] if b.t + sec <= t]
+        bs[tf] = bias_from_bars(closed)
+        if tf == "1d" and closed:
+            datr = calc_atr(closed) or datr
+    return make_info(bs, datr, t)
+
+def make_info(bs, datr, ts):
+    """Trend per chart timeframe from the four higher-timeframe trends (same rules as the indicator)."""
     def maj(*v):
         t = sum(v)
         return 1 if t >= 2 else -1 if t <= -2 else 0
@@ -1669,10 +2256,18 @@ def bias_info_for(sym, now, cache):
     bull = sum(1 for v in bs.values() if v == 1); bear = sum(1 for v in bs.values() if v == -1)
     now_b = 1 if bull > bear else -1 if bear > bull else 0
     txt = ("BULL" if now_b == 1 else "BEAR" if now_b == -1 else "MIXED") + f" {max(bull, bear)}/4"
-    info = dict(ts=now, now=now_b, txt=txt, datr=datr, by_tf=by_tf, txt_by_tf=txt_by_tf,
+    return dict(ts=ts, now=now_b, txt=txt, datr=datr, by_tf=by_tf, txt_by_tf=txt_by_tf, bs=dict(bs),
                 arrows=f"D{arrow(bs['1d'])} 4H{arrow(bs['4h'])} 1H{arrow(bs['1h'])} 15{arrow(bs['15m'])}")
-    cache[sym] = info
-    return info
+
+ALIGN_KEYS = {1: {"1m": ("4h", "1h", "15m"), "5m": ("4h", "1h", "15m"), "15m": ("4h", "1h", "15m"),
+                  "30m": ("4h", "1h", "15m"), "1h": ("1d", "4h", "1h")},
+              2: {tf: ("1d", "4h", "1h", "15m") for tf in ("1m", "5m", "15m", "30m", "1h")}}
+
+def aligned_trend(bs, tf, align):
+    """Stricter trend (tested per setting): align 1 = the 4H, 1H and 15M all the same way (1H chart: D, 4H, 1H),
+    align 2 = all four (D, 4H, 1H, 15M). Otherwise mixed (0)."""
+    vals = [bs.get(k, 0) for k in ALIGN_KEYS[align][tf]]
+    return vals[0] if vals[0] != 0 and all(v == vals[0] for v in vals) else 0
 
 def snapshot(syms, now, cache):
     """Current price, change since the last daily close, and the 1H-level trend for each symbol."""
@@ -1708,12 +2303,40 @@ def run(symbols, tfs, tg, once=False, minutes=0):
         log.warning("Channel disabled for this run: signals go to private subscribers only (fix TELEGRAM_CHAT_ID or remove it)")
         tg.channel = ""
     end = time.time() + minutes * 60 if minutes else None
+    m1c, nxt_m1 = {}, {}                                    # 1-minute candles read this round, next minute per symbol
+
+    def minute_bars(sym, now):
+        if sym not in m1c or m1c[sym][0] != now:
+            m1c[sym] = (now, get_candles(sym, "1m", now))
+        return m1c[sym][1]
+
+    def minute_limit(sym, pairs):
+        # minutes are followed only up to the close of the next chart candle each timeframe still has to plan, so
+        # a stop or an exit never happens before a candle that closed earlier was planned (same order as the backtest)
+        lim = [eng.pair(x, t)["last_t"] + 2 * TF_SEC[t] for x, t in pairs if x == sym and eng.pair(x, t)["last_t"]]
+        return min(lim) if lim else None
+
     while True:
         now = int(time.time())
         eng.poll()                                          # users choosing their signals
         eng.daily_messages(now)
-        eng.auto_offsets(sorted({x for x, _ in watch_pairs(eng, symbols, tfs)}), now)
-        for sym, tf in watch_pairs(eng, symbols, tfs):
+        pairs = watch_pairs(eng, symbols, tfs)
+        eng.auto_offsets(sorted({x for x, _ in pairs}), now)
+        # a) every minute: the waiting and open trades on the minute that just closed (stop moves, exits)
+        if MINUTES:
+            for sym in sorted({o["sym"] for o in eng.orders if o["state"] in (PENDING, OPEN)}):
+                if now < nxt_m1.get(sym, 0):
+                    continue
+                try:
+                    m1 = minute_bars(sym, now)
+                    eng.manage_minutes(sym, m1, until=minute_limit(sym, pairs))
+                    eng.save()
+                    nxt_m1[sym] = (m1[-1].t + 120 + 3) if m1 else now + 20
+                except Exception as e:
+                    log.warning("%s 1m: %s", sym, e)
+                    nxt_m1[sym] = now + 20
+        # b) every chart candle: the minutes up to its close, then the plan (missed candles are caught up in order)
+        for sym, tf in pairs:
             key = f"{sym}|{tf}"
             if now < nxt.get(key, 0):
                 continue
@@ -1724,9 +2347,22 @@ def run(symbols, tfs, tg, once=False, minutes=0):
                 if ps["last_t"] == 0 and new:
                     new = new[-1:]                                  # first run: only the latest bar
                 if new:
+                    m1 = minute_bars(sym, now) if MINUTES else []
+                    t_end = bars[new[-1]].t + TF_SEC[tf]
+                    if MINUTES and (not m1 or m1[-1].t + 60 < t_end) and now < t_end + 180:
+                        nxt[key] = now + 10                          # the minutes of that candle are not all in yet
+                        continue
                     info = bias_info_for(sym, now, cache)
                     for i in new:
-                        eng.process_bar(sym, tf, bars[:i + 1], info, is_latest=(i == len(bars) - 1))
+                        sub = None
+                        if MINUTES:
+                            eng.manage_minutes(sym, m1, until=bars[i].t + TF_SEC[tf])
+                            sub = []                                  # already followed minute by minute
+                        if i == len(bars) - 1:
+                            eng.process_bar(sym, tf, bars[:i + 1], info, is_latest=True, subbars=sub)
+                        else:                                       # missed between runs: planned too, sent later if still waiting
+                            eng.process_bar(sym, tf, bars[:i + 1], bias_info_at(sym, bars[i].t + TF_SEC[tf], cache, info),
+                                            is_latest=False, replay=True, subbars=sub)
                     eng.save()
                 last = bars[-1].t if bars else now
                 nxt[key] = max(last + 2 * TF_SEC[tf] + 3, now + 20)
