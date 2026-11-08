@@ -165,13 +165,13 @@ PROFILES = {
         "1h": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
     "XAGUSD": {
-        "5m": dict(on=True, sl=3.0, rr=[1.5], limits=False, mixed=False, start="02:00", end="12:00", range=48, zones=2, zsl=0.25, zrr=[1.0], ztrend=1, zkeep=0, weak=True, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
+        "5m": dict(on=True, sl=2.0, rr=[2.0], limits=False, mixed=False, start="02:00", end="12:00", range=48, zones=2, zsl=0.25, zrr=[1.0], ztrend=1, zkeep=0, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
         "15m": dict(on=True, sl=4.0, rr=[1.5], limits=False, mixed=True, start="08:00", end="12:00", zones=2, zsl=0.25, zrr=[1.5], ztrend=1, zkeep=0, weak=True, protect="pct", be_at_r=0.5, lock1_at=0.0, lock1_to=0.0, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # h50
         "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="01:30", end="24:00", range=36, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
         "1h": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=False, start="00:00", end="21:30", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
     },
     "US30": {
-        "5m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="02:00", end="12:00", range=48, stack=2, zones=3, zsl=0.75, zrr=[1.0], ztrend=1, zkeep=0, rng=False, weak=True, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
+        "5m": dict(on=True, sl=2.0, rr=[2.0], limits=False, mixed=False, start="03:00", end="07:00", range=48, stack=2, zones=2, zsl=0.75, zrr=[1.0], ztrend=1, zkeep=0, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
         "15m": dict(on=True, sl=3.0, rr=[2.0], limits=False, mixed=True, start="02:00", end="12:00", align=1, zones=2, zsl=0.75, zrr=[1.5], ztrend=1, zkeep=0, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
         "30m": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
         "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=False, start="00:00", end="24:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
@@ -183,7 +183,7 @@ PROFILES = {
         "1h": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", stack=2, protect="pct", be_at_r=0.3, lock1_at=0.6, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # p8
     },
     "USOIL": {
-        "5m": dict(on=True, sl=3.0, rr=[1.5], limits=False, mixed=False, start="03:00", end="11:00", weak=True, protect="pct", be_at_r=0.5, lock1_at=0.0, lock1_to=0.0, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # h50
+        "5m": dict(on=True, sl=3.0, rr=[2.0], limits=False, mixed=False, start="03:00", end="11:00", protect="pct", be_at_r=0.5, lock1_at=0.0, lock1_to=0.0, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # h50
         "15m": dict(on=True, sl=2.0, rr=[1.5], limits=False, mixed=True, start="03:00", end="11:00", align=2, zones=3, zsl=0.75, zrr=[1.0], ztrend=2, zkeep=0, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
         "30m": dict(on=False, sl=3.0, rr=[1.5], limits=False, mixed=True, start="00:00", end="24:00", stack=3, protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
         "1h": dict(on=False, sl=3.0, rr=[1.5], limits=True, mixed=True, start="00:00", end="17:00", protect="pct", be_at_r=0.4, lock1_at=0.7, lock1_to=0.3, lock2_at=0.0, lock2_to=0.0, cost_max=0.06, day_green=False, day_losses=0),  # q1
