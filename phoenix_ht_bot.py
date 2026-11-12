@@ -1,13 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v27)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v28)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v28 (same rules as the indicator v20 and the MetaTrader 5 EA v4; backtests and the guide in Google Drive, folder
+  "Phoenix HAZ SMC v20 — Fibonacci"):
+  FIBONACCI ORDERS. At every chart candle close, for each side: the last swing high that is not broken yet gets a
+  BUY STOP (a swing = a high above the L candles before it and not below the R candles after it). Its Fibonacci goes
+  from the lowest point since the swing low before it (1.0, the base of the move with its order block) to the swing
+  high (0.0): entry = 0.0, stop = beyond the tested Fibonacci level (0.786 / 1.0 ...) by a little ATR, targets = the
+  Fibonacci extensions (0.382 / 0.618 / 1.0 / 1.618 of the move beyond the 0.0). A SELL STOP the same way down.
+  One trade per swing, never a buy and a sell together, tested trading hours and trend rule per chart, the last target
+  always at least as far as the stop. TP1 -> "move the stop to the entry + costs", TP2 -> "move the stop to TP1", the
+  last target closes the trade (the bot says it within the minute). A waiting order whose base moved is updated in
+  its message; one that is no longer valid is cancelled with the reason. Tested on real 1-minute prices Mar 2023 -
+  Nov 2026, every calendar year alone, with the OneRoyal ECN costs (spreads seen on the account: gold 0.07-0.14,
+  Nasdaq 0.8, Dow 1.1, silver 0.024, oil 0.020; used a little wider). Charts with no tested setting get no orders.
+  New, clearer messages: every order shows entry / stop / targets with their Fibonacci level and $ at the lot shown,
+  the trend rule, and the tested result of that chart in every year.
 
 v27 (same rules as the indicator v19; made for trading by hand on the OneRoyal ECN account; backtests in Google Drive):
   buy / sell zones and order blocks at every market open: at the Tokyo (09:00), London (08:00) and New York (09:30)
@@ -93,8 +109,8 @@ INSTRUMENTS = {
 # opening deal), a typical raw spread (price), and the smallest lot. 1 pip: gold 0.1, silver 0.01, Dow / Nasdaq 1 index
 # point (= 10 MT5 points, the price has 1 decimal), oil 0.01. Dow / Nasdaq: contract 1 = $1 per point per lot,
 # smallest lot 0.1 = $0.10 per pip.
-ECN_COSTS = {"XAUUSD": (7.0, 0.18, 0.01), "XAGUSD": (7.0, 0.025, 0.01), "US30": (0.7, 2.0, 0.1),
-             "NAS100": (0.7, 1.5, 0.1), "USOIL": (7.0, 0.04, 0.01)}
+ECN_COSTS = {"XAUUSD": (7.0, 0.12, 0.01), "XAGUSD": (7.0, 0.03, 0.01), "US30": (0.7, 1.5, 0.1),
+             "NAS100": (0.7, 1.0, 0.1), "USOIL": (7.0, 0.025, 0.01)}
 # trading costs taken off every closed trade in the reports, and covered by the protected stop (break-even after costs).
 # Default: the OneRoyal ECN costs above (COSTS=none for no costs). Override for everybody with COMMISSION_PER_LOT /
 # SPREAD, or per instrument: COMMISSION_XAUUSD=7, SPREAD_US30=2, MINLOT_US30=0.1
@@ -618,6 +634,154 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
                 else: o["be"] += 1                    # at entry (protected exit; the money still shows its small cost)
     return out
 
+# ───────────────────────────── v28: FIBONACCI ORDERS (the same rules as the indicator v20 and the EA v4) ─────────────────────────────
+# At every chart candle close, for each side:
+#   the last swing high that is not broken yet (a high above the L candles before it and not below the R candles after
+#   it, seen R candles later) gets a BUY STOP. Its Fibonacci: 1.0 = the lowest point since the swing low before it (the
+#   base of the move, with its order block), 0.0 = the swing high. Entry = 0.0, stop = beyond the tested Fibonacci level
+#   by a little ATR, targets = the Fibonacci extensions beyond the 0.0. A SELL STOP the same way down. One trade per swing.
+#   On the charts where it tested better (gold 5m, Nasdaq 15m and 30m) the move that made the swing must also have left
+#   a fair value gap (FVG).
+#   Rules: tested trading hours (New York), tested trend rule (EMA 20/50 of the last FINISHED higher candles), never a
+#   buy and a sell together, at most the tested number of trades the same way, the last target at least as far as the
+#   stop. Management: target 1 -> stop to entry + costs, target 2 -> stop to target 1, the last target closes.
+# The tested setting of every chart (backtest 2023 - 2026, every year alone) is V20 below; a chart that is not there
+# gets no orders.
+# == V20 START ==
+V20 = {
+    "XAUUSD": {
+        "1m": {"L": 30, "R": 2, "minleg": 6.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "slow", "stack": 3, "start": 480, "end": 720, "fvg": False, "years": [251.9, 933.13, 1815.9, 1134.01]},
+        "5m": {"L": 30, "R": 1, "minleg": 4.5, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 120, "end": 600, "fvg": True, "years": [615.96, 923.93, 2510.66, 4380.81]},
+        "15m": {"L": 30, "R": 1, "minleg": 4.5, "sfib": 1.0, "slb": 1.0, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "fast", "stack": 3, "start": 120, "end": 600, "fvg": False, "years": [540.77, 537.99, 3699.65, 5297.58]},
+        "30m": {"L": 8, "R": 1, "minleg": 3.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "1d", "stack": 3, "start": 180, "end": 720, "fvg": False, "years": [645.83, 1058.71, 2830.02, 3863.79]},
+        "1h": {"L": 8, "R": 1, "minleg": 0.5, "sfib": 0.786, "slb": 0.25, "tps": [0.618, 1.0, 1.618], "trend": 0, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [1036.15, 857.06, 1992.85, 4507.1]},
+    },
+    "NAS100": {
+        "5m": {"L": 30, "R": 1, "minleg": 6.0, "sfib": 0.786, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 120, "end": 360, "fvg": False, "years": [215.79, 208.24, 388.02, 457.86]},
+        "15m": {"L": 20, "R": 3, "minleg": 0.5, "sfib": 1.0, "slb": 1.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "slow", "stack": 3, "start": 180, "end": 720, "fvg": True, "years": [432.13, 445.17, 430.4, 719.24]},
+        "30m": {"L": 20, "R": 1, "minleg": 3.0, "sfib": 0.786, "slb": 0.5, "tps": [0.272, 0.618, 1.0], "trend": 0, "bias": "slow", "stack": 3, "start": 180, "end": 720, "fvg": True, "years": [462.3, 820.83, 527.56, 1261.14]},
+        "1h": {"L": 30, "R": 2, "minleg": 6.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [695.99, 1117.7, 1246.28, 980.13]},
+    },
+    "US30": {
+        "5m": {"L": 12, "R": 2, "minleg": 0.5, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 420, "end": 660, "fvg": False, "years": [329.47, 469.43, 700.75, 535.42]},
+        "15m": {"L": 30, "R": 1, "minleg": 4.5, "sfib": 0.786, "slb": 0.1, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "tf", "stack": 3, "start": 420, "end": 660, "fvg": False, "years": [383.57, 449.64, 645.26, 574.08]},
+        "30m": {"L": 3, "R": 1, "minleg": 0.5, "sfib": 0.786, "slb": 0.5, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "fast", "stack": 2, "start": 420, "end": 660, "fvg": False, "years": [419.91, 287.56, 934.16, 329.56]},
+        "1h": {"L": 8, "R": 1, "minleg": 1.5, "sfib": 1.0, "slb": 0.0, "tps": [0.382, 1.0], "trend": 1, "bias": "fast", "stack": 1, "start": 480, "end": 720, "fvg": False, "years": [648.34, 355.82, 568.06, 553.21]},
+    },
+}
+# == V20 END ==
+
+V20_BIAS_NAME = {"tf": "", "quick": "15M+5M", "fast": "1H+15M", "mid": "4H·1H·15M", "slow": "D·4H·1H", "4h": "4H", "1d": "D"}
+V20_TF_DEFAULT = {"1m": "quick", "5m": "fast", "15m": "mid", "30m": "mid", "1h": "slow"}
+V20_HTF = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+
+
+def v20_params(sym, tf):
+    return V20.get(sym, {}).get(tf)
+
+
+def v20_swh(hs, j, L, R):
+    h = hs[j]
+    return all(h > hs[j - q] for q in range(1, L + 1)) and all(h >= hs[j + q] for q in range(1, R + 1))
+
+
+def v20_swl(ls, j, L, R):
+    v = ls[j]
+    return all(v < ls[j - q] for q in range(1, L + 1)) and all(v <= ls[j + q] for q in range(1, R + 1))
+
+
+def v20_bias_one(bars, tc, sec):
+    """Trend of one higher timeframe: its last candle FINISHED BEFORE tc (the close of the chart candle), like the
+    indicator (no repaint): close against EMA 20 / 50."""
+    closed = [b for b in bars if b.t + sec < tc]
+    return bias_from_bars(closed)
+
+
+def v20_bias(htf, tc, code, tf):
+    """The trend the chart reads (code: tf / quick / fast / mid / slow / 4h / 1d) at the close tc of its candle."""
+    code = code if code and code != "tf" else V20_TF_DEFAULT.get(tf, "fast")
+    b = {k: v20_bias_one(htf.get(k) or [], tc, s) for k, s in V20_HTF.items()}
+
+    def maj(a, c, d):
+        t = a + c + d
+        return 1 if t >= 2 else -1 if t <= -2 else 0
+    if code == "quick":
+        return b["15m"] if b["15m"] == b["5m"] else 0
+    if code == "fast":
+        return b["1h"] if b["1h"] == b["15m"] else 0
+    if code == "mid":
+        return maj(b["4h"], b["1h"], b["15m"])
+    if code == "slow":
+        return maj(b["1d"], b["4h"], b["1h"])
+    if code == "4h":
+        return b["4h"]
+    return b["1d"]
+
+
+def v20_plan(bars, d, pp, atr, bias, mins, used_t, open_same, open_opp):
+    """The STOP order of side d at the close of bars[-1]: (plan dict, '') or (None, why). bars: closed candles."""
+    L, R = int(pp["L"]), int(pp["R"])
+    n = len(bars)
+    hs, ls, cs = [b.h for b in bars], [b.l for b in bars], [b.c for b in bars]
+    j = -1
+    for q in range(n - 1 - R, L - 1, -1):
+        if (v20_swh(hs, q, L, R) if d == 1 else v20_swl(ls, q, L, R)):
+            j = q
+            break
+    if j < 0:
+        return None, "no swing yet"
+    lvl = hs[j] if d == 1 else ls[j]
+    if any((cs[q] > lvl) if d == 1 else (cs[q] < lvl) for q in range(j + R, n)):
+        return None, "the swing broke: waiting for a new one"
+    if used_t == bars[j].t:
+        return None, "this swing was traded already"
+    j0 = -1
+    for q in range(j - 1, L - 1, -1):
+        if (v20_swl(ls, q, L, R) if d == 1 else v20_swh(hs, q, L, R)):
+            j0 = q
+            break
+    if j0 < 0:
+        return None, "no base swing yet"
+    if pp.get("fvg"):                      # the move that made the swing must have left a gap (FVG)
+        seg = range(j0, j + 1)
+        kb0 = min(seg, key=lambda q: (ls[q], q)) if d == 1 else min(seg, key=lambda q: (-hs[q], q))
+        if not any((ls[q + 1] > hs[q - 1]) if d == 1 else (hs[q + 1] < ls[q - 1]) for q in range(kb0 + 1, j)):
+            return None, "the move left no FVG"
+    kb = j0
+    for q in range(j0, n):
+        if (ls[q] < ls[kb]) if d == 1 else (hs[q] > hs[kb]):
+            kb = q
+    lo, hi = (ls[kb], lvl) if d == 1 else (lvl, hs[kb])
+    leg = hi - lo
+    if leg <= 0 or not atr or leg < pp["minleg"] * atr:
+        return None, "the move is too small"
+    tps = [float(x) for x in pp["tps"]]
+    if d == 1:
+        E, S, G = hi, hi - pp["sfib"] * leg - pp["slb"] * atr, [hi + x * leg for x in tps]
+    else:
+        E, S, G = lo, lo + pp["sfib"] * leg + pp["slb"] * atr, [lo - x * leg for x in tps]
+    risk = abs(E - S)
+    if not (risk > 0 and abs(G[-1] - E) >= risk and ((d == 1 and G[0] > E > S) or (d == -1 and G[0] < E < S))):
+        return None, "the target would be smaller than the stop"
+    if not (pp["start"] <= mins < pp["end"]):
+        return None, f"outside the hours {pp['start'] // 60:02d}:{pp['start'] % 60:02d}-{pp['end'] // 60:02d}:{pp['end'] % 60:02d} NY"
+    tr = int(pp["trend"])
+    if not (tr == 0 or (tr == 1 and bias != -d) or (tr == 2 and bias == d)):
+        return None, "against the trend rule"
+    if open_opp:
+        return None, "a trade the other way is open"
+    if open_same >= int(pp["stack"]):
+        return None, "enough trades this way"
+    if (d == 1 and not cs[-1] < E) or (d == -1 and not cs[-1] > E):
+        return None, "price is already beyond the entry"
+    ob = kb
+    for q in range(kb, max(kb - 5, 0) - 1, -1):
+        if (bars[q].c < bars[q].o) if d == 1 else (bars[q].c > bars[q].o):
+            ob = q
+            break
+    return dict(dir=d, E=E, S=S, tps=G, lo=lo, hi=hi, swing_t=bars[j].t, base_t=bars[kb].t, ob_hi=bars[ob].h,
+                ob_lo=bars[ob].l, ob_t=bars[ob].t, risk=risk, fib=[float(pp["sfib"])] + tps), ""
+
 # ───────────────────────────── messages ─────────────────────────────
 LINE = "━━━━━━━━━━━━━━━━━━"
 SIGN = "🔥 <b>The Phoenix HAZ Syndicate</b>"
@@ -1054,11 +1218,12 @@ def calib_markup():
 def msg_welcome(name):
     who = html.escape(name) if name else "trader"
     return (f"🔥 <b>Welcome to PHOENIX HAZ SMC</b>\nأهلاً وسهلاً فيك يا {who} 🤝\n{LINE}\n"
-            "Smart-money pending orders on Gold, Silver, Dow, Nasdaq and Oil: entry, stop and target, followed live until the end.\n"
-            "إشارات أوامر معلّقة بأسلوب SMC على الذهب والفضة والداو والناسداك والنفط: دخول ووقف وهدف، ومتابعة كل صفقة لآخرها.\n\n"
+            "Fibonacci breakout orders on Gold, Nasdaq and Dow (Silver and Oil when they pass the test): entry, stop and "
+            "three targets from the Fibonacci of the move, followed live until the end.\n"
+            "أوامر فيبوناتشي عند كسر القمم والقيعان على الذهب والناسداك والداو: دخول ووقف وتلات أهداف من فيبوناتشي الحركة، ومتابعة كل صفقة لآخرها.\n\n"
             "<b>What you get · شو بيوصلك</b>\n"
-            "🎯 Every order with the price now, entry, stop and target\n"
-            "⚡ Live updates: filled, protect, target, stop\n"
+            "🎯 Every order with the price now, entry, stop and 3 targets (with their Fibonacci level)\n"
+            "⚡ Live updates: filled, TP1 → stop to entry, TP2 → stop to TP1, closed\n"
             "☀️ A morning brief and 🌙 a market-close summary\n"
             "📊 /report: today, week and month in points and $\n\n"
             "<b>How to start · كيف تبلّش</b>\n"
@@ -1094,9 +1259,8 @@ def msg_morning(sub, snap, dt, lines_i):
     return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
             f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
             f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade, wait for your price. Move the stop when the bot says so: every signal shows where "
-            f"(price and $), and the message comes within the minute. A $200 account: take gold 5M and Nasdaq 1H, and stop a "
-            f"chart when the bot says its daily target is reached.\n\n"
+            f"🛡 Risk 1–2% per trade. Put the STOP order as it comes; at TP1 move the stop to the entry, at TP2 to TP1 "
+            f"(the bot tells you within the minute). Every order shows how its chart did in every test year.\n\n"
             f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
 
 def stats_text(sub, ledger, ref_ts):
@@ -1167,8 +1331,8 @@ def msg_dayend(o, r, gain_pts):
 BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Prices now"), ("report", "Today, week, month"),
                 ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("lang", "English only / Arabic + English"),
                 ("stop", "Pause all signals"), ("help", "Help")]
-BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC\nSmart-money pending orders for Gold, Silver, Dow, Nasdaq and Oil: price now, entry, stop, "
-                   "target and live follow-up. Morning brief and market-close summary.\n"
+BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC v20\nFibonacci breakout orders for Gold, Nasdaq and Dow: price now, entry, stop, "
+                   "3 targets and live follow-up (when to move the stop). Morning brief and market-close summary.\n"
                    "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
                    "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
@@ -1194,6 +1358,121 @@ def msg_lang(sub):
     if sub.get("lang") == "en":
         return "🌐 Messages are now in <b>English</b> only. Send /lang ar for Arabic + English."
     return "🌐 الرسائل صارت <b>عربي + English</b>. للإنكليزي بس ابعت /lang en"
+
+# ───────────────────────────── v28 messages (Fibonacci orders) ─────────────────────────────
+def v20_fib(x):
+    t = f"{x:.3f}".rstrip("0")
+    return t + "0" if t.endswith(".") else t
+
+
+def v20_kind(o):
+    return "BUY STOP" if o["dir"] == 1 else "SELL STOP"
+
+
+def v20_head(o):
+    return f"{ICON.get(o['sym'], '•')} <b>{o['sym']}</b> {INSTRUMENTS[o['sym']]['name']}  ·  ⏱ <b>{o['tf'].upper()}</b>"
+
+
+def v20_years_txt(sym, tf):
+    pp = v20_params(sym, tf) or {}
+    y = pp.get("years") or []
+    if len(y) < 4:
+        return ""
+    s = "  ".join(f"{yr} {'+' if v >= 0 else '−'}${abs(v):,.0f}" for yr, v in zip((2023, 2024, 2025, 2026), y))
+    return f"🧾 <i>Tested (lot {lot_for(sym, 0.01):g}, every year alone): {s}</i>\n"
+
+
+def v20_level_rows(o):
+    sym, d, E = o["sym"], o["dir"], o["trig"]
+    cost = cost_price(sym)
+    n = len(o["tps"])
+    stop_now = o.get("stop", o["sl"])
+    rows = [f"🎯 <b>Entry</b>   <code>{fmt(sym, E)}</code>  · Fib 0.0 (the swing)"]
+    lost = (stop_now - E) * d - cost
+    rows.append(f"🛑 <b>Stop</b>    <code>{fmt(sym, stop_now)}</code>  · {'+' if lost >= 0 else '−'}{usd_txt(sym, lost)} · Fib {v20_fib(o['fib'][0])}"
+                if o.get("fib") else
+                f"🛑 <b>Stop</b>    <code>{fmt(sym, stop_now)}</code>  · {'+' if lost >= 0 else '−'}{usd_txt(sym, lost)}")
+    for i, tp in enumerate(o["tps"]):
+        gain = (tp - E) * d - cost
+        act = "closes the trade" if i == n - 1 else "then stop → entry" if i == 0 else f"then stop → TP{i}"
+        tick = "✅ " if o.get("hits", 0) > i else ("🏁 " if i == n - 1 else "🏆 ")
+        fibx = f" · Fib −{v20_fib(o['fib'][i + 1])}" if o.get("fib") and len(o["fib"]) > i + 1 else ""
+        rows.append(f"{tick}<b>TP{i + 1}</b>     <code>{fmt(sym, tp)}</code>  · +{usd_txt(sym, gain)}{fibx} · <i>{act}</i>")
+    return rows
+
+
+def msg_v20_new(o, bias, price=None, updated=False, late=False):
+    sym, d = o["sym"], o["dir"]
+    pp = v20_params(sym, o["tf"]) or {}
+    code = pp.get("bias", "tf")
+    name = V20_BIAS_NAME.get(code) or V20_BIAS_NAME.get(V20_TF_DEFAULT.get(o["tf"], "fast"), "")
+    tr = {1: "▲ BULL", -1: "▼ BEAR"}.get(bias, "• MIXED")
+    t_ = int(pp.get("trend", 2))
+    rule = ("both ways" if t_ == 0 else
+            ("no sells" if bias == 1 else "no buys" if bias == -1 else "both ways") if t_ == 1 else
+            ("buys only" if bias == 1 else "sells only" if bias == -1 else "waits for a clear trend"))
+    head = ("🔄 <i>Updated · تحديث المستويات</i>" if updated else "🔔 <i>New order · أمر جديد</i>")
+    side = ("🟢 <b>BUY STOP</b> — شراء عند كسر القمة" if d == 1 else "🔴 <b>SELL STOP</b> — بيع عند كسر القاع")
+    where = ""
+    if price is not None:
+        away = o["trig"] - price
+        where = f"💰 Price now <code>{fmt(sym, price)}</code> · {pts(sym, away)} points {'below' if away > 0 else 'above'} the entry\n"
+    when = ""
+    if late:
+        when = "🕒 <i>From a candle the bot caught up later; still waiting for its entry</i>\n"
+    if updated:
+        when += f"🔄 <i>The base of the move changed at {datetime.fromtimestamp(o.get('upd_t', o['born_t']) + TF_SEC[o['tf']], MSG_TZ).strftime('%H:%M')}: new stop / targets</i>\n"
+    return (f"🔥 <b>PHOENIX HAZ SMC</b> · v20  ·  {head}\n{LINE}\n{v20_head(o)}\n{side}\n"
+            f"<i>Fibonacci of the move: 1.0 = its start (order block) · 0.0 = the swing</i>\n\n" +
+            "\n".join(v20_level_rows(o)) + "\n\n" + where +
+            f"📊 Trend <b>{tr}</b> ({name}) · {rule}\n" + v20_years_txt(sym, o["tf"]) + when +
+            f"⏳ Waits for the break of the swing · removed when it is no longer valid\n"
+            f"🛡 <i>TP1 → move the stop to the entry · TP2 → to TP1 (the bot tells you within the minute)</i>" + footer())
+
+
+def msg_v20_filled(o):
+    sym, d = o["sym"], o["dir"]
+    return (f"⚡ <b>FILLED</b> · تفعّل الأمر\n{'🟢 BUY' if d == 1 else '🔴 SELL'} <code>{fmt(sym, o['trig'])}</code> · "
+            f"{sym} {o['tf'].upper()}\n🛑 Stop <code>{fmt(sym, o['sl'])}</code> · 🏆 TP1 <code>{fmt(sym, o['tps'][0])}</code>\n"
+            f"<i>Stick to the plan: when TP1 is hit the bot tells you to move the stop.</i>\n"
+            f"<i>التزم بالخطة: بس يضرب الهدف الأول البوت بقلّك وين تنقل الستوب.</i>")
+
+
+def msg_v20_tp(o, k):
+    sym, d = o["sym"], o["dir"]
+    tp = o["tps"][k]
+    gain = (tp - o["trig"]) * d - cost_price(sym)
+    mv = o["mv"]
+    to = "entry + costs" if k == 0 else f"TP{k}"
+    ar = "انقل الستوب عالدخول" if k == 0 else f"انقل الستوب عالهدف {k}"
+    nxt = o["tps"][k + 1]
+    return (f"✅ <b>TP{k + 1} HIT</b> · +{usd_txt(sym, gain)} on the way 🎉 · ضرب الهدف {k + 1}\n"
+            f"🛡 <b>MOVE THE STOP TO</b> <code>{fmt(sym, mv)}</code> ({to}) · {ar}\n"
+            f"Next: TP{k + 2} <code>{fmt(sym, nxt)}</code>\n<s>{html.escape(short(o))}</s>" + joke(JOKES_TP, JOKES_TP_EN))
+
+
+def msg_v20_exit(o):
+    sym, d, st = o["sym"], o["dir"], o["state"]
+    px = o.get("exit_px", o["sl"])
+    net = (px - o["trig"]) * d - cost_price(sym)
+    sgn = "+" if net >= 0 else "−"
+    if st == TP_HIT:
+        head = f"🏁 <b>LAST TARGET HIT · TRADE CLOSED</b> · {sgn}{usd_txt(sym, net)} 🎉🎉\nسكّرت الصفقة عالهدف الأخير"
+        jk = joke(JOKES_TP, JOKES_TP_EN)
+    elif st == SL_HIT:
+        head = f"❌ <b>STOP LOSS</b> · {sgn}{usd_txt(sym, net)}\nضرب الستوب. خسارة محسوبة ومنكمّل بانضباط."
+        jk = joke(JOKES_SL, JOKES_SL_EN)
+    elif st == LOCK_HIT:
+        head = f"🔒 <b>CLOSED ON THE MOVED STOP</b> · {sgn}{usd_txt(sym, net)} locked ✅\nطلعت بربح مقفول"
+        jk = joke(JOKES_SAFE, JOKES_SAFE_EN)
+    else:
+        head = f"⚖️ <b>CLOSED AT ENTRY</b> · {sgn}{usd_txt(sym, net)} · TP1 was hit before\nطلعت عالدخول بلا خسارة"
+        jk = joke(JOKES_SAFE, JOKES_SAFE_EN)
+    return f"{head}\n{html.escape(short(o))} → <code>{fmt(sym, px)}</code>" + jk + footer()
+
+
+def msg_v20_cancel(o, reason):
+    return (f"🟣 <b>CANCELLED</b> · انلغى الأمر\n<i>{html.escape(reason)}</i>\n<s>{html.escape(short(o))}</s>")
 
 # ───────────────────────────── telegram ─────────────────────────────
 class Telegram:
@@ -1589,7 +1868,7 @@ class Engine:
     def expire(self, o, reason, not_triggered=True):
         o["state"] = CANCELLED
         if o.get("msgs"):
-            self.bc.edit(o, msg_expired(o, reason, not_triggered))
+            self.bc.edit(o, msg_v20_cancel(o, reason) if o.get("v20") else msg_expired(o, reason, not_triggered))
 
     def why(self, text):
         self.stats["unreal"] += 1
@@ -1651,7 +1930,7 @@ class Engine:
             if (tgt or mloss) and abs(time.time() - t) < 900 and self.bc.targets(sym, tf):     # live only
                 self.bc.send_new(sym, tf, msg_day_done(sym, tf, ps["dnet"], tgt and ps["dnet"] >= tgt, lot))
 
-    def _manage(self, sym, tf, mine, sb, ps):
+    def _manage_v19(self, sym, tf, mine, sb, ps):
         """One candle (a minute, or the whole chart candle) for the waiting and open orders `mine` of a pair: first
         the entries (and a breakout's target in the minute it was filled), then the open trades, then the daily rule."""
         for o in mine:
@@ -1866,7 +2145,7 @@ class Engine:
             pend.append(n)
 
     # ── one completed bar
-    def process_bar(self, sym, tf, bars, bias_info, is_latest, replay=False, subbars=None):
+    def process_bar_v19(self, sym, tf, bars, bias_info, is_latest, replay=False, subbars=None):
         """is_latest = the newest closed candle: new orders are planned and sent. replay = a candle missed between two
         runs, caught up now: it is planned the same way (like the indicator, which plans on every candle), but its new
         orders are only kept; the ones still waiting are sent at the newest candle."""
@@ -2022,6 +2301,148 @@ class Engine:
                         ps["sent"] = ps.get("sent", 0) + 1
                         self.sent[day] = self.sent.get(day, 0) + 1
 
+        ps["last_t"] = bar.t
+        self.orders = [o for o in self.orders if o["state"] in (PENDING, OPEN) or o["born_t"] > bar.t - 3 * 86400]
+
+    # ── v28: Fibonacci orders (the same rules as the indicator v20, the EA v4 and the backtest)
+    def _v20_open(self, sym, tf, d):
+        return [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] == OPEN and o["dir"] == d]
+
+    def _v20_book(self, o, t, px, state):
+        """A finished trade: its state, its exit, the ledger (W / L / BE after the costs, like the indicator)."""
+        o["state"], o["exit_px"], o["exit_t"] = state, px, t
+        dist = (px - o["trig"]) * o["dir"]
+        cost = cost_price(o["sym"])
+        oc = -1 if state == SL_HIT else 1 if dist - cost > INSTRUMENTS[o["sym"]]["tick"] else 2
+        self.ledger.append({"t": t, "td": trading_day(t).isoformat(), "sym": o["sym"], "tf": o["tf"], "dist": dist,
+                            "cost": cost, "oc": oc})
+        cutoff = t - 100 * 86400
+        self.ledger = [e for e in self.ledger if e["t"] > cutoff]
+
+    def _manage(self, sym, tf, mine, sb, ps):
+        """One minute (or the whole chart candle) for the waiting and open orders `mine` of a chart: first the fills
+        (a STOP order fills when the price touches it; a stop touched in the same minute counts first), then the open
+        trades: the stop first, then the targets (TP1 -> the stop goes to the entry + costs, TP2 -> to TP1, the last
+        target closes). By hand the stop is moved at the close of the minute, only where it can really be put."""
+        for o in mine:
+            if o["state"] != PENDING:
+                continue
+            d = o["dir"]
+            if (d == 1 and sb.h >= o["trig"]) or (d == -1 and sb.l <= o["trig"]):
+                ps.setdefault("used", {})[str(d)] = o.get("swing_t")      # one trade per swing
+                if self._v20_open(sym, tf, -d):
+                    self.expire(o, "a trade the other way is open (never a buy and a sell together)")
+                    continue
+                o.update(state=OPEN, fill_t=sb.t, hits=0, stop=o["sl"], mv=None)
+                self.say(o, msg_v20_filled(o))
+                for q in self.orders:                 # the other side's waiting order goes (never both ways)
+                    if q is not o and q["sym"] == sym and q["tf"] == tf and q["state"] == PENDING and q["dir"] == -d:
+                        self.expire(q, "the other order was filled (never a buy and a sell together)")
+                if (d == 1 and sb.l <= o["sl"]) or (d == -1 and sb.h >= o["sl"]):
+                    self._v20_book(o, sb.t, o["sl"], SL_HIT)
+                    self.say(o, msg_v20_exit(o))
+        for o in mine:
+            if o["state"] != OPEN or sb.t <= o.get("fill_t", 0):
+                continue
+            d = o["dir"]
+            if (d == 1 and sb.l <= o["stop"]) or (d == -1 and sb.h >= o["stop"]):
+                locked = (o["stop"] - o["trig"]) * d > 1.5 * cost_price(sym)
+                st = SL_HIT if o.get("hits", 0) == 0 else LOCK_HIT if locked else BE_HIT
+                self._v20_book(o, sb.t, o["stop"], st)
+                self.say(o, msg_v20_exit(o))
+                continue
+            n = len(o["tps"])
+            while o["state"] == OPEN and o["hits"] < n and (
+                    (d == 1 and sb.h >= o["tps"][o["hits"]]) or (d == -1 and sb.l <= o["tps"][o["hits"]])):
+                k = o["hits"]
+                o["hits"] += 1
+                if k == n - 1:
+                    self._v20_book(o, sb.t, o["tps"][k], TP_HIT)
+                    self.say(o, msg_v20_exit(o))
+                    break
+                o["mv"] = o["trig"] + d * cost_price(sym) if k == 0 else o["tps"][k - 1]
+                self.say(o, msg_v20_tp(o, k))
+            if o["state"] == OPEN and o.get("mv") is not None:
+                mv = o["mv"]
+                can = (sb.c > mv) if d == 1 else (sb.c + INSTRUMENTS[sym].get("spread", 0.0) < mv)
+                if can or not REAL_STOP:
+                    if (d == 1 and mv > o["stop"]) or (d == -1 and mv < o["stop"]):
+                        o["stop"] = mv
+                    o["mv"] = None
+
+    def process_bar(self, sym, tf, bars, bias_info, is_latest, replay=False, subbars=None):
+        """At a chart candle close: its minutes (fills, stops, targets), then the BUY STOP / SELL STOP of the chart made
+        again from its structure. A waiting order of the same swing is kept (its message is updated when its stop or
+        targets moved); an order that is no longer valid is cancelled with the reason."""
+        bar, ps = bars[-1], self.pair(sym, tf)
+        sec = TF_SEC[tf]
+        tc = bar.t + sec
+        mins, day = ny_parts(tc)
+        mine = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] in (PENDING, OPEN)]
+        if ps["day"] != day:
+            ps.update(day=day, last_slot=-1, sent=0)
+        for sb in (subbars if subbars is not None else [bar]):
+            self._manage(sym, tf, mine, sb, ps)
+        pp = v20_params(sym, tf)
+        plan_ok = is_latest or (replay and REPLAY_MISSED and len(bars) > 60)
+        if not pp:
+            for o in self.orders:
+                if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING:
+                    self.expire(o, "this chart has no tested setting")
+            ps["last_t"] = bar.t
+            return
+        if plan_ok:
+            atr = calc_atr(bars)
+            htf = bias_info.get("htf") or {}
+            bias = v20_bias(htf, tc, pp.get("bias", "tf"), tf) if htf else bias_info.get("now", 0)
+            for d in (1, -1):
+                cur = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING and o["dir"] == d]
+                plan, why = v20_plan(bars, d, pp, atr, bias, mins, ps.get("used", {}).get(str(d)),
+                                     len(self._v20_open(sym, tf, d)), len(self._v20_open(sym, tf, -d)))
+                keep = None
+                for o in cur:
+                    if plan and o.get("swing_t") == plan["swing_t"] and keep is None:
+                        keep = o
+                    else:
+                        self.expire(o, why or "a newer swing replaced it")
+                if not plan:
+                    continue
+                if keep is not None:
+                    moved = any(abs(a - b) > INSTRUMENTS[sym]["tick"] / 2
+                                for a, b in zip([keep["sl"]] + keep["tps"], [plan["S"]] + plan["tps"]))
+                    if moved:
+                        keep.update(sl=plan["S"], inval=plan["S"], stop=plan["S"], tps=plan["tps"], risk=plan["risk"],
+                                    rrs=[abs(t - keep["trig"]) / max(plan["risk"], 1e-12) for t in plan["tps"]],
+                                    upd_t=bar.t, base_t=plan["base_t"])
+                        if keep.get("msgs") and is_latest and not replay:
+                            self.bc.edit(keep, msg_v20_new(keep, bias, bar.c, updated=True))
+                    continue
+                if not self.bc.targets(sym, tf):
+                    continue
+                ps["seq"] += 1
+                o = dict(v20=True, sym=sym, tf=tf, dir=d, kind="BUY STOP" if d == 1 else "SELL STOP", is_stop=True,
+                         trig=plan["E"], entry=plan["E"], lo=plan["E"], hi=plan["E"], sl=plan["S"], inval=plan["S"],
+                         stop=plan["S"], tps=plan["tps"], risk=plan["risk"],
+                         rrs=[abs(t - plan["E"]) / max(plan["risk"], 1e-12) for t in plan["tps"]],
+                         swing_t=plan["swing_t"], base_t=plan["base_t"], fib=plan["fib"], plan=f"{sym}{tf}{ps['seq']}",
+                         state=PENDING, born_t=bar.t, fill_t=0, hits=0, mv=None, m1_next=bar.t + sec, sp=0.0,
+                         with_trend=(bias == d), fav=0.0, adv=0.0, be=False)
+                if is_latest and not replay:
+                    msgs = self.bc.send_new(sym, tf, msg_v20_new(o, bias, bar.c))
+                    if not msgs:
+                        continue                                 # Telegram refused: tried again at the next candle
+                    o["msgs"] = msgs
+                    ps["sent"] = ps.get("sent", 0) + 1
+                    self.sent[day] = self.sent.get(day, 0) + 1
+                else:
+                    o["late"] = True
+                self.orders.append(o)
+            if is_latest and not replay:                          # orders of missed candles still waiting: sent now
+                for o in self.orders:
+                    if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING and o.get("late") and not o.get("msgs"):
+                        msgs = self.bc.send_new(sym, tf, msg_v20_new(o, bias, bar.c, late=True))
+                        if msgs:
+                            o["msgs"] = msgs
         ps["last_t"] = bar.t
         self.orders = [o for o in self.orders if o["state"] in (PENDING, OPEN) or o["born_t"] > bar.t - 3 * 86400]
 
@@ -2208,12 +2629,14 @@ class Engine:
 # ───────────────────────────── live loop ─────────────────────────────
 HTF_SEC = {"1d": 86400, "4h": 14400, "1h": 3600, "15m": 900}
 
-def bias_info_for(sym, now, cache):
+def bias_info_for(sym, now, cache, fresh_after=0):
+    """The higher-timeframe candles and trends of a symbol (read again when older than 10 minutes, or when a chart
+    candle closed after they were read: the trend must see every higher candle finished before that close)."""
     c = cache.get(sym)
-    if c and now - c["ts"] < 600:
+    if c and now - c["ts"] < 600 and c["ts"] >= fresh_after:
         return c
     bs, datr, htf = {}, None, {}
-    for tf in ("1d", "4h", "1h", "15m"):
+    for tf in ("1d", "4h", "1h", "15m", "5m"):
         try:
             bars_tf = get_candles(sym, tf, now)
             htf[tf] = bars_tf
@@ -2352,7 +2775,7 @@ def run(symbols, tfs, tg, once=False, minutes=0):
                     if MINUTES and (not m1 or m1[-1].t + 60 < t_end) and now < t_end + 180:
                         nxt[key] = now + 10                          # the minutes of that candle are not all in yet
                         continue
-                    info = bias_info_for(sym, now, cache)
+                    info = bias_info_for(sym, now, cache, fresh_after=t_end)
                     for i in new:
                         sub = None
                         if MINUTES:
@@ -2361,8 +2784,7 @@ def run(symbols, tfs, tg, once=False, minutes=0):
                         if i == len(bars) - 1:
                             eng.process_bar(sym, tf, bars[:i + 1], info, is_latest=True, subbars=sub)
                         else:                                       # missed between runs: planned too, sent later if still waiting
-                            eng.process_bar(sym, tf, bars[:i + 1], bias_info_at(sym, bars[i].t + TF_SEC[tf], cache, info),
-                                            is_latest=False, replay=True, subbars=sub)
+                            eng.process_bar(sym, tf, bars[:i + 1], info, is_latest=False, replay=True, subbars=sub)
                     eng.save()
                 last = bars[-1].t if bars else now
                 nxt[key] = max(last + 2 * TF_SEC[tf] + 3, now + 20)
@@ -2406,7 +2828,7 @@ def selftest():
         eng.process_bar("XAUUSD", "5m", bars[max(0, i - 300):i + 1], info, is_latest=True)
     kinds = {}
     for k, t in fb.log:
-        key = k + ":" + next((w for w in ("New signal", "FILLED", "TARGET", "STOP LOSS HIT", "LOCK", "PROTECT", "NOT TRIGGERED", "UPDATED") if w in t), "?")
+        key = k + ":" + next((w for w in ("New order", "Updated", "FILLED", "TP1 HIT", "TP2 HIT", "LAST TARGET", "STOP LOSS", "CLOSED AT ENTRY", "MOVED STOP", "CANCELLED") if w in t), "?")
         kinds[key] = kinds.get(key, 0) + 1
     print("messages by type:", json.dumps(kinds, indent=1))
     print("ledger entries:", len(eng.ledger))
