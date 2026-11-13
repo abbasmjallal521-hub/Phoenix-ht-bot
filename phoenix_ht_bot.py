@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v29.2)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v29.3)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v29.3 — FIX (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal): the GOLD signals had stopped since the v28 update
+  (12 Nov). An old trade of the engine before v20 (bot v27, saved without a 'stop') stayed open in the saved state, and
+  following the gold minutes failed at every candle for all the gold charts (KeyError 'stop'), so nothing was sent on
+  gold. Now old orders of the engine before v20 that are still waiting or open are closed quietly when the state is
+  loaded, an open order without a stop takes the stop of its order, and a broken order is closed instead of stopping a
+  whole symbol. Nothing else changed (same rules, settings and messages as v29.2).
 
 v29.2 — SHORT messages: a new order is 7 lines (side and entry, stop, targets with $, trend, price now, lot), a
   fill 2 lines, a target 3 lines and one short sentence, a closing 2 lines (the last target with a congratulations).
@@ -2003,6 +2010,12 @@ class Engine:
                         OFFSETS[sym] = x["v"]
                 for o in d.get("orders", []):
                     o.setdefault("inval", o.get("sl"))
+                    if not o.get("v20") and o.get("state") in (PENDING, OPEN):   # v29.3: an order of the engine before
+                        o["state"] = CANCELLED                                     # v20 (bot v27) blocked the gold charts
+                        o["old_engine"] = True
+                        log.info("old order closed (engine before v20): %s %s", o.get("sym"), o.get("tf"))
+                    if o.get("state") == OPEN and "stop" not in o:
+                        o["stop"] = o.get("sl")
                 # orders planned on missed candles (late) stay too: one already open counts in the results like
                 # the indicator's, even after a restart
                 self.orders = [o for o in d.get("orders", []) if "tps" in o and
@@ -2588,6 +2601,13 @@ class Engine:
         for o in mine:
             if o["state"] != OPEN:
                 continue
+            if "stop" not in o:                                  # v29.3: never stop a whole symbol on one order
+                if o.get("sl") is None or "trig" not in o or "tps" not in o:
+                    o["state"] = CANCELLED
+                    self.dirty = True
+                    log.warning("%s %s: an order without its levels was closed", sym, tf)
+                    continue
+                o["stop"] = o["sl"]
             if live:
                 if o.get("fill_poll") == self.poll_id:          # filled on this very read: its stop was checked above
                     continue
