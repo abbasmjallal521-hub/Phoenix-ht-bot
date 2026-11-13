@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v29.1)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v29.2)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v29.2 — SHORT messages: a new order is 7 lines (side and entry, stop, targets with $, trend, price now, lot), a
+  fill 2 lines, a target 3 lines and one short sentence, a closing 2 lines (the last target with a congratulations).
+  Each reader gets one language only (Arabic, or English with /lang en): no line twice any more.
 
 v29.1 — the target messages: at every target the bot says the profit there for whoever closes, and how to secure
   the trade (move the stop) and carry on; the last target is a congratulations with every detail of the trade (the
@@ -1394,9 +1398,12 @@ def msg_lang(sub):
 TF_AR = {"1m": "دقيقة", "5m": "5 دقايق", "15m": "ربع ساعة", "30m": "نص ساعة", "1h": "ساعة"}
 
 
+AR_MARK = "\u2064"                                     # invisible mark: this line is for Arabic readers only
+
+
 def bi(ar, en):
-    """One line in Arabic and the same line in English (shown only to English-only readers)."""
-    return f"{ar}\n{EN_MARK}{en}"
+    """One line in Arabic (Arabic readers) and the same line in English (English-only readers): never both."""
+    return f"{AR_MARK}{ar}\n{EN_MARK}{en}"
 
 
 def v20_fib(x):
@@ -1410,7 +1417,7 @@ def v20_kind(o):
 
 def v20_head(o, en=False):
     tf = o["tf"].upper() if en else TF_AR.get(o["tf"], o["tf"])
-    return f"{ICON.get(o['sym'], '•')} <b>{o['sym']}</b> {INSTRUMENTS[o['sym']]['name']}  ·  ⏱ <b>{tf}</b>"
+    return f"{ICON.get(o['sym'], '•')} <b>{o['sym']}</b> · {tf}"
 
 
 def v29_usd(sym, dist):
@@ -1447,94 +1454,43 @@ def v20_years_txt(sym, tf, en=False):
     if len(y) < 4:
         return ""
     s = "  ".join(f"{yr} {'+' if v >= 0 else '−'}${abs(v):,.0f}" for yr, v in zip((2023, 2024, 2025, 2026), y))
-    if en:
-        return f"🧾 <i>Tested at all hours (lot {lot_for(sym, 0.01):g}, every year alone): {s}</i>"
-    return f"🧾 <i>التيست بكل الساعات (لوت {lot_for(sym, 0.01):g}، كل سنة لحالها): {s}</i>"
+    return f"🧾 {'Tested' if en else 'التيست'}: {s}"
 
 
 def v20_level_rows(o, en=False):
-    """Entry, stop (and the first stop once it moved) and the targets, with their Fibonacci level and $."""
+    """Stop and targets, one short line each: price and $ at the lot shown (after spread + commission)."""
     sym, d, E = o["sym"], o["dir"], o["trig"]
     cost = cost_price(sym)
     n = len(o["tps"])
-    fib = o.get("fib") or []
     stop_now = o.get("stop", o["sl"])
-    rows = [f"🎯 {'Entry' if en else 'الدخول'}  <code>{fmt(sym, E)}</code>  · Fib 0.0"]
-    sf = f" · Fib {v20_fib(fib[0])}" if fib else ""
-    moved = abs(stop_now - o["sl"]) > INSTRUMENTS[sym]["tick"] / 2
-    rows.append(f"🛑 {'Stop' if en else 'الستوب'}  <code>{fmt(sym, stop_now)}</code>  · {v29_usd(sym, (stop_now - E) * d - cost)}"
-                + ("" if moved else sf))
-    if moved:
-        rows.append(f"▫️ {'First stop' if en else 'الستوب الأصلي'}  <code>{fmt(sym, o['sl'])}</code>{sf}")
+    rows = [f"🛑 {'SL' if en else 'ستوب'} <code>{fmt(sym, stop_now)}</code> ({v29_usd(sym, (stop_now - E) * d - cost)})"]
     for i, tp in enumerate(o["tps"]):
-        gain = (tp - E) * d - cost
-        if en:
-            act = "closes the trade" if i == n - 1 else "then stop → entry" if i == 0 else f"then stop → TP{i}"
-        else:
-            act = "بتسكّر الصفقة" if i == n - 1 else "بعدها الستوب عالدخول" if i == 0 else f"بعدها الستوب عهدف {i}"
-        mark = "✅" if o.get("hits", 0) > i else ("🏁" if i == n - 1 else "🏆")
-        fx = f" · Fib −{v20_fib(fib[i + 1])}" if len(fib) > i + 1 else ""
-        rows.append(f"{mark} {f'TP{i + 1}' if en else f'هدف {i + 1}'}  <code>{fmt(sym, tp)}</code>  · {v29_usd(sym, gain)}{fx} · <i>{act}</i>")
+        mark = "✅" if o.get("hits", 0) > i else ("🏁" if i == n - 1 else "🎯")
+        rows.append(f"{mark} {f'TP{i + 1}' if en else f'هدف {i + 1}'} <code>{fmt(sym, tp)}</code> ({v29_usd(sym, (tp - E) * d - cost)})")
     return rows
 
 
+def short_note():
+    return "\n" + bi("⚠️ <i>للتعليم فقط · مش نصيحة مالية</i>", "⚠️ <i>Education only · not financial advice</i>")
+
+
 def msg_v20_new(o, bias, price=None, updated=False, late=False):
-    sym, d, tf = o["sym"], o["dir"], o["tf"]
-    pp = v20_params(sym, tf) or {}
-    code = pp.get("bias", "tf")
-    name = V20_BIAS_NAME.get(code) or V20_BIAS_NAME.get(V20_TF_DEFAULT.get(tf, "fast"), "")
-    t_ = int(pp.get("trend", 2))
+    """A new (or updated) order, short: side and entry, stop, targets with $, trend and price now, lot."""
+    sym, d = o["sym"], o["dir"]
     tr_ar = {1: "▲ صاعد", -1: "▼ هابط"}.get(bias, "• مخلوط")
     tr_en = {1: "▲ BULL", -1: "▼ BEAR"}.get(bias, "• MIXED")
-    if t_ == 0:
-        rule_ar, rule_en = "شراء وبيع", "both ways"
-    elif t_ == 1:
-        rule_ar = "ما في بيع" if bias == 1 else "ما في شراء" if bias == -1 else "شراء وبيع"
-        rule_en = "no sells" if bias == 1 else "no buys" if bias == -1 else "both ways"
-    else:
-        rule_ar = "شراء بس" if bias == 1 else "بيع بس" if bias == -1 else "ناطر اتجاه واضح"
-        rule_en = "buys only" if bias == 1 else "sells only" if bias == -1 else "waits for a clear trend"
-    out = [f"🔥 <b>PHOENIX HAZ SMC</b> · v20.4",
-           bi("🔄 <b>تحديث المستويات</b>" if updated else "🔔 <b>أمر جديد</b>",
-              "🔄 <b>Updated levels</b>" if updated else "🔔 <b>New order</b>"),
-           LINE,
-           bi(v20_head(o), v20_head(o, True)),
-           bi("🟢 <b>BUY STOP</b> · شراء إذا انكسرت القمة" if d == 1 else "🔴 <b>SELL STOP</b> · بيع إذا انكسر القاع",
-              "🟢 <b>BUY STOP</b> · buy when the swing high breaks" if d == 1 else "🔴 <b>SELL STOP</b> · sell when the swing low breaks"),
-           bi("💡 <i>" + ("فوق القمة في سيولة (أوامر ستوب): إذا انكسرت منفوت مع الحركة لفوق" if d == 1 else
-                         "تحت القاع في سيولة (أوامر ستوب): إذا انكسر منفوت مع الحركة لتحت") + "</i>",
-              "💡 <i>Liquidity rests " + ("above the swing high: when it breaks we ride the move up" if d == 1 else
-                                         "below the swing low: when it breaks we ride the move down") + "</i>"),
-           bi("📐 <i>فيبوناتشي الحركة: 1.0 = بدايتها (الأوردر بلوك) · 0.0 = " + ("القمة" if d == 1 else "القاع") + "</i>",
-              "📐 <i>Fibonacci of the move: 1.0 = its start (order block) · 0.0 = the swing</i>"),
-           ""]
-    ar_rows, en_rows = v20_level_rows(o), v20_level_rows(o, True)
-    for a, e in zip(ar_rows, en_rows):
+    tag_ar = "🔄 <b>تحديث</b>" if updated else "🔔 <b>أمر جديد</b>"
+    tag_en = "🔄 <b>Updated</b>" if updated else "🔔 <b>New order</b>"
+    out = [bi(f"{tag_ar} · {v20_head(o)}" + (" · 🕒" if late else ""), f"{tag_en} · {v20_head(o, True)}" + (" · 🕒" if late else "")),
+           f"{'🟢' if d == 1 else '🔴'} <b>{v20_kind(o)}</b> <code>{fmt(sym, o['trig'])}</code>"]
+    for a, e in zip(v20_level_rows(o), v20_level_rows(o, True)):
         out.append(bi(a, e))
-    out.append("")
-    if price is not None:
-        away = o["trig"] - price
-        out.append(bi(f"💰 السعر هلّق <code>{fmt(sym, price)}</code> · {pts(sym, away)} نقطة {'تحت' if away > 0 else 'فوق'} الدخول",
-                      f"💰 Price now <code>{fmt(sym, price)}</code> · {pts(sym, away)} points {'below' if away > 0 else 'above'} the entry"))
-    out.append(bi(f"📊 الاتجاه <b>{tr_ar}</b> ({name}) · {rule_ar}", f"📊 Trend <b>{tr_en}</b> ({name}) · {rule_en}"))
-    if v20_years_txt(sym, tf):
-        out.append(bi(v20_years_txt(sym, tf), v20_years_txt(sym, tf, True)))
-    out.append(bi(f"💼 المبالغ عـ لوت {v29_lot(sym)} (بعد السبريد والكوميشن)", f"💼 $ at lot {v29_lot(sym)} (after spread + commission)"))
-    if late:
-        out.append(bi("🕒 <i>من شمعة لحقها البوت متأخر، بس بعدو ناطر الدخول</i>",
-                      "🕒 <i>From a candle the bot caught up later; still waiting for its entry</i>"))
-    if updated:
-        hh = datetime.fromtimestamp(o.get("upd_t", o["born_t"]) + TF_SEC[tf], MSG_TZ).strftime("%H:%M")
-        out.append(bi(f"🔄 <i>تغيّرت بداية الحركة الساعة {hh}: ستوب وأهداف جداد</i>",
-                      f"🔄 <i>The base of the move changed at {hh}: new stop / targets</i>"))
-    out.append(bi("⏳ بيستنّى كسر " + ("القمة" if d == 1 else "القاع") + " · بينلغى إذا ما عاد صالح",
-                  "⏳ Waits for the break of the swing · cancelled when it is no longer valid"))
-    out.append(bi("🛡 <i>هدف 1 ← الستوب عالدخول · هدف 2 ← الستوب عهدف 1 · البوت بيقلّك بنفس اللحظة</i>",
-                  "🛡 <i>TP1 → stop to the entry · TP2 → stop to TP1 · the bot tells you the moment it happens</i>"))
-    return "\n".join(out) + footer()
+    now_ar = f" · هلّق <code>{fmt(sym, price)}</code>" if price is not None else ""
+    now_en = f" · now <code>{fmt(sym, price)}</code>" if price is not None else ""
+    out.append(bi(f"📊 {tr_ar}{now_ar} · لوت {v29_lot(sym)}", f"📊 {tr_en}{now_en} · lot {v29_lot(sym)}"))
+    return "\n".join(out) + short_note()
 
 
-# meaningful lines under the results (rotating, never the same twice in a row)
 LINES_FILL = [
     ("💪 الخطة واضحة، والباقي عالانضباط.", "💪 The plan is clear; the rest is discipline."),
     ("🧠 دخلنا بخطة: ستوب محسوب وأهداف واضحة.", "🧠 In with a plan: a known stop and clear targets."),
@@ -1572,65 +1528,44 @@ def v29_line(pool):
         return ""
     a, e = pool[JN % len(pool)]
     JN += 1
-    return "\n\n" + bi(f"<i>{html.escape(a)}</i>", f"<i>{html.escape(e)}</i>")
+    return "\n" + bi(f"<i>{html.escape(a)}</i>", f"<i>{html.escape(e)}</i>")
 
 
 def msg_v20_filled(o):
     sym, d, tf = o["sym"], o["dir"], o["tf"]
-    cost = cost_price(sym)
     at = o.get("fill_at", o.get("fill_t", time.time()))
-    placed = o["born_t"] + TF_SEC[tf]
-    waited = max(0, at - placed)
-    side_ar = "🟢 شراء" if d == 1 else "🔴 بيع"
-    side_en = "🟢 BUY" if d == 1 else "🔴 SELL"
-    out = [bi(f"⚡ <b>تفعّلت الصفقة!</b>  {side_ar}", f"⚡ <b>FILLED</b>  {side_en}"),
-           bi(v20_head(o), v20_head(o, True)),
-           bi(f"🎯 دخلت عـ <code>{fmt(sym, o['trig'])}</code> · الساعة {v29_clock(at)}",
-              f"🎯 In at <code>{fmt(sym, o['trig'])}</code> · {v29_clock(at)}"),
-           bi(f"🛑 الستوب <code>{fmt(sym, o['sl'])}</code> ({v29_usd(sym, (o['sl'] - o['trig']) * d - cost)}) · "
-              f"🏆 هدف 1 <code>{fmt(sym, o['tps'][0])}</code> ({v29_usd(sym, (o['tps'][0] - o['trig']) * d - cost)})",
-              f"🛑 Stop <code>{fmt(sym, o['sl'])}</code> ({v29_usd(sym, (o['sl'] - o['trig']) * d - cost)}) · "
-              f"🏆 TP1 <code>{fmt(sym, o['tps'][0])}</code> ({v29_usd(sym, (o['tps'][0] - o['trig']) * d - cost)})"),
-           bi(f"⏱ الأمر استنّى {v29_dur(waited)} قبل ما يتفعّل", f"⏱ The order waited {v29_dur(waited, True)} before it filled"),
-           bi("📌 <i>أول ما يضرب هدف 1 البوت بيقلّك: اللي بدو يسكّر بياخد ربحو، واللي بدو يكفّي بيأمّن (الستوب عالدخول) وبيكمّل</i>",
-              "📌 <i>As soon as TP1 is hit the bot tells you: take the profit, or secure the trade (stop to the entry) and carry on</i>")]
-    return "\n".join(out) + v29_line(LINES_FILL)
+    waited = max(0, at - (o["born_t"] + TF_SEC[tf]))
+    out = [bi(f"⚡ <b>تفعّلت</b> {'🟢 شراء' if d == 1 else '🔴 بيع'} · {v20_head(o)}",
+              f"⚡ <b>FILLED</b> {'🟢 BUY' if d == 1 else '🔴 SELL'} · {v20_head(o, True)}"),
+           bi(f"🎯 <code>{fmt(sym, o['trig'])}</code> · 🛑 <code>{fmt(sym, o['sl'])}</code> · ⏱ استنّى {v29_dur(waited)}",
+              f"🎯 <code>{fmt(sym, o['trig'])}</code> · 🛑 <code>{fmt(sym, o['sl'])}</code> · ⏱ waited {v29_dur(waited, True)}")]
+    return "\n".join(out)
 
 
 ORD_AR = ["الأول", "التاني", "التالت", "الرابع"]
-ORD_EN = ["FIRST", "SECOND", "THIRD", "FOURTH"]
 
 
 def msg_v20_tp(o, k):
-    """A target hit (not the last one): the profit there for whoever closes, and how to secure the trade and carry on."""
+    """A target hit (not the last one): the profit there, and how to secure and carry on. Short."""
     sym, d = o["sym"], o["dir"]
     cost = cost_price(sym)
-    tp = o["tps"][k]
-    gain = (tp - o["trig"]) * d - cost
+    gain = (o["tps"][k] - o["trig"]) * d - cost
     mv = o["mv"]
     nxt = o["tps"][k + 1]
     ran = max(0, o.get("hit_at", time.time()) - o.get("fill_at", o.get("fill_t", time.time())))
-    if k == 0:
-        mv_ar = f"🛡 <b>واللي بدو يكفّي: أمّن صفقتك هلّق</b> · انقل الستوب عـ <code>{fmt(sym, mv)}</code> (الدخول) وكمّل معنا 🚀"
-        mv_en = f"🛡 <b>To carry on: secure the trade now</b> · move the stop to <code>{fmt(sym, mv)}</code> (the entry) and ride on 🚀"
-    else:
-        kept = v29_usd(sym, (mv - o["trig"]) * d - cost)
-        mv_ar = f"🛡 <b>واللي بدو يكفّي: انقل الستوب عـ هدف {k} <code>{fmt(sym, mv)}</code></b> · {kept} صاروا محفوظين، وكمّل 🏁"
-        mv_en = f"🛡 <b>To carry on: move the stop to TP{k} <code>{fmt(sym, mv)}</code></b> · {kept} kept, ride on 🏁"
-    out = [bi(f"{'✅' * (k + 1)} <b>ضرب الهدف {ORD_AR[min(k, 3)]}!</b>  {v29_usd(sym, gain)} 🎉",
-              f"{'✅' * (k + 1)} <b>TP{k + 1} HIT</b> · {ORD_EN[min(k, 3)].lower()} target  {v29_usd(sym, gain)} 🎉"),
-           bi(v20_head(o), v20_head(o, True)),
-           bi(f"💵 اللي بدو يسكّر هون: ربحو <b>{v29_usd(sym, gain)}</b> 👌", f"💵 Closing here: <b>{v29_usd(sym, gain)}</b> profit 👌"),
-           bi(mv_ar, mv_en),
-           bi(f"🎯 الجاي: هدف {k + 2} عـ <code>{fmt(sym, nxt)}</code> ({v29_usd(sym, (nxt - o['trig']) * d - cost)})",
-              f"🎯 Next: TP{k + 2} at <code>{fmt(sym, nxt)}</code> ({v29_usd(sym, (nxt - o['trig']) * d - cost)})"),
-           bi(f"⏱ صرلها {v29_dur(ran)} شغّالة", f"⏱ Running for {v29_dur(ran, True)}")]
+    where_ar = "الدخول" if k == 0 else f"هدف {k}"
+    where_en = "the entry" if k == 0 else f"TP{k}"
+    out = [bi(f"{'✅' * (k + 1)} <b>هدف {k + 1} انضرب!</b> {v29_usd(sym, gain)} 🎉 · {v20_head(o)}",
+              f"{'✅' * (k + 1)} <b>TP{k + 1} HIT</b> {v29_usd(sym, gain)} 🎉 · {v20_head(o, True)}"),
+           bi(f"💵 سكّر وخود ربحك، أو كفّي: الستوب عـ <code>{fmt(sym, mv)}</code> ({where_ar})",
+              f"💵 Take the profit, or carry on: stop to <code>{fmt(sym, mv)}</code> ({where_en})"),
+           bi(f"🎯 الجاي <code>{fmt(sym, nxt)}</code> ({v29_usd(sym, (nxt - o['trig']) * d - cost)}) · ⏱ {v29_dur(ran)}",
+              f"🎯 Next <code>{fmt(sym, nxt)}</code> ({v29_usd(sym, (nxt - o['trig']) * d - cost)}) · ⏱ {v29_dur(ran, True)}")]
     return "\n".join(out) + v29_line(LINES_TP)
 
 
 def msg_v20_exit(o):
-    """The end of a trade: the last target (congratulations with every detail), the stop, or the moved stop after
-    a target (said as the profit that was there at the targets, and what the rest of the trade did)."""
+    """The end of a trade, short: the result with $, entry -> exit, targets hit, the time it took."""
     sym, d, st = o["sym"], o["dir"], o["state"]
     cost = cost_price(sym)
     px = o.get("exit_px", o["sl"])
@@ -1638,43 +1573,29 @@ def msg_v20_exit(o):
     took = max(0, o.get("exit_at", o.get("exit_t", time.time())) - o.get("fill_at", o.get("fill_t", time.time())))
     n = len(o["tps"])
     h = int(o.get("hits", 0))
-    side_ar = "🟢 شراء" if d == 1 else "🔴 بيع"
-    side_en = "🟢 BUY" if d == 1 else "🔴 SELL"
     gains = [(t - o["trig"]) * d - cost for t in o["tps"]]
-    out = []
+    path = f"<code>{fmt(sym, o['trig'])}</code> ← <code>{fmt(sym, px)}</code>"
+    path_en = f"<code>{fmt(sym, o['trig'])}</code> → <code>{fmt(sym, px)}</code>"
     if st == TP_HIT:
-        out += [bi("🏆🎉 <b>مبروك! ضرب الهدف الأخير</b> 🎉🏆", "🏆🎉 <b>CONGRATS! LAST TARGET HIT</b> 🎉🏆"),
-                bi(f"💰 الصفقة سكّرت كلها بربح <b>{v29_usd(sym, net)}</b>", f"💰 The whole trade closed with <b>{v29_usd(sym, net)}</b> profit"),
-                bi(f"{side_ar} · {v20_head(o)}", f"{side_en} · {v20_head(o, True)}"),
-                bi("💵 " + " · ".join(f"هدف {i + 1} {v29_usd(sym, g)}" for i, g in enumerate(gains)),
-                   "💵 " + " · ".join(f"TP{i + 1} {v29_usd(sym, g)}" for i, g in enumerate(gains)))]
+        out = [bi(f"🏆🎉 <b>مبروك! الهدف الأخير</b> · {v20_head(o)}", f"🏆🎉 <b>CONGRATS! LAST TARGET</b> · {v20_head(o, True)}"),
+               bi(f"💰 <b>{v29_usd(sym, net)}</b> · {path} · {'✅' * h} · ⏱ {v29_dur(took)}",
+                  f"💰 <b>{v29_usd(sym, net)}</b> · {path_en} · {'✅' * h} · ⏱ {v29_dur(took, True)}")]
         pool = LINES_LAST
     elif st == SL_HIT:
-        out += [bi(f"❌ <b>ضرب الستوب</b>  {v29_usd(sym, net)}", f"❌ <b>STOP LOSS</b>  {v29_usd(sym, net)}"),
-                bi(f"{side_ar} · {v20_head(o)}", f"{side_en} · {v20_head(o, True)}")]
+        out = [bi(f"❌ <b>ستوب</b> {v29_usd(sym, net)} · {v20_head(o)}", f"❌ <b>STOP LOSS</b> {v29_usd(sym, net)} · {v20_head(o, True)}"),
+               bi(f"📍 {path} · ⏱ {v29_dur(took)}", f"📍 {path_en} · ⏱ {v29_dur(took, True)}")]
         pool = LINES_SL
     elif st == LOCK_HIT:
-        out += [bi(f"🔒 <b>سكّرت بربح محفوظ {v29_usd(sym, net)}</b> ✅", f"🔒 <b>CLOSED ON THE MOVED STOP</b>  {v29_usd(sym, net)} kept ✅"),
-                bi(f"{side_ar} · {v20_head(o)}", f"{side_en} · {v20_head(o, True)}"),
-                bi(f"💵 ضرب {'هدفين' if h == 2 else str(h) + ' أهداف'}: اللي سكّر عهدف {h} ربح <b>{v29_usd(sym, gains[h - 1])}</b>",
-                   f"💵 {h} targets hit: closing at TP{h} made <b>{v29_usd(sym, gains[h - 1])}</b>")]
+        out = [bi(f"🔒 <b>ربح محفوظ {v29_usd(sym, net)}</b> · {v20_head(o)}", f"🔒 <b>PROFIT KEPT {v29_usd(sym, net)}</b> · {v20_head(o, True)}"),
+               bi(f"💵 اللي سكّر عهدف {h}: {v29_usd(sym, gains[h - 1])} · ⏱ {v29_dur(took)}",
+                  f"💵 Closed at TP{h}: {v29_usd(sym, gains[h - 1])} · ⏱ {v29_dur(took, True)}")]
         pool = LINES_LOCK
     else:
-        out += [bi("✅ <b>خلصت الصفقة بعد ما ضربت هدف 1</b> 💰", "✅ <b>TRADE DONE after TP1</b> 💰"),
-                bi(f"{side_ar} · {v20_head(o)}", f"{side_en} · {v20_head(o, True)}"),
-                bi(f"💵 اللي سكّر عهدف 1 ربح <b>{v29_usd(sym, gains[0])}</b> 👌",
-                   f"💵 Whoever closed at TP1 made <b>{v29_usd(sym, gains[0])}</b> 👌"),
-                bi(f"🛡 والباقي سكّر عالدخول بلا خسارة ({v29_usd(sym, net)})، لأنّو أمّنّا الصفقة",
-                   f"🛡 The rest CLOSED AT ENTRY with no loss ({v29_usd(sym, net)}) because the trade was secured")]
+        out = [bi(f"✅ <b>خلصت بعد هدف 1</b> · {v20_head(o)}", f"✅ <b>DONE AFTER TP1</b> · {v20_head(o, True)}"),
+               bi(f"💵 اللي سكّر عهدف 1: {v29_usd(sym, gains[0])} · الباقي عالدخول · ⏱ {v29_dur(took)}",
+                  f"💵 Closed at TP1: {v29_usd(sym, gains[0])} · the rest CLOSED AT ENTRY · ⏱ {v29_dur(took, True)}")]
         pool = LINES_BE
-    out += [bi(f"📍 دخول <code>{fmt(sym, o['trig'])}</code> ← طلعة <code>{fmt(sym, px)}</code> · "
-               + ("ما ضرب ولا هدف" if not h else f"ضرب {h} من {n} أهداف" + (" ✅" * h if st == TP_HIT else "")),
-               f"📍 In <code>{fmt(sym, o['trig'])}</code> → out <code>{fmt(sym, px)}</code> · "
-               + ("no target hit" if not h else f"{h} of {n} targets hit")),
-            bi(f"⏱ أخدت {v29_dur(took)} · من {v29_clock(o.get('fill_at', o.get('fill_t', 0)))} لـ {v29_clock(o.get('exit_at', o.get('exit_t', 0)))}",
-               f"⏱ Took {v29_dur(took, True)} · {v29_clock(o.get('fill_at', o.get('fill_t', 0)))} → {v29_clock(o.get('exit_at', o.get('exit_t', 0)))}"),
-            bi(f"💼 لوت {v29_lot(sym)} · بعد السبريد والكوميشن", f"💼 Lot {v29_lot(sym)} · after spread + commission")]
-    return "\n".join(out) + v29_line(pool) + footer()
+    return "\n".join(out) + v29_line(pool)
 
 
 WHY_AR = {
@@ -1713,8 +1634,8 @@ class Telegram:
     def _lang(self, chat, text):
         try:
             if self.lang_of and self.lang_of(chat) == "en":
-                return to_en(text).replace(EN_MARK, "")
-            return "\n".join(x for x in text.split("\n") if EN_MARK not in x)
+                return to_en("\n".join(x for x in text.split("\n") if AR_MARK not in x)).replace(EN_MARK, "")
+            return "\n".join(x for x in text.split("\n") if EN_MARK not in x).replace(AR_MARK, "")
         except Exception:
             return text
 
@@ -3183,7 +3104,7 @@ def selftest():
         eng.process_bar("XAUUSD", "5m", bars[max(0, i - 300):i + 1], info, is_latest=True)
     kinds = {}
     for k, t in fb.log:
-        key = k + ":" + next((w for w in ("New order", "Updated", "FILLED", "TP1 HIT", "TP2 HIT", "LAST TARGET", "STOP LOSS", "CLOSED AT ENTRY", "MOVED STOP", "CANCELLED") if w in t), "?")
+        key = k + ":" + next((w for w in ("New order", "Updated", "FILLED", "TP1 HIT", "TP2 HIT", "LAST TARGET", "STOP LOSS", "CLOSED AT ENTRY", "PROFIT KEPT", "CANCELLED") if w in t), "?")
         kinds[key] = kinds.get(key, 0) + 1
     print("messages by type:", json.dumps(kinds, indent=1))
     print("ledger entries:", len(eng.ledger))
