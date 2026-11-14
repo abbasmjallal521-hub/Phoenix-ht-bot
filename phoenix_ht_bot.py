@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v29.3)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v29.4)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v29.4 — the extra rules per chart of the indicator v20.6 (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal),
+  tested chart by chart (2023 - 2026, every year alone): on some charts the stop beyond the order block (Fibonacci
+  1.0), resting orders (a swing high / low not taken yet) before target 1, the dollar index (Capital.com DXY, epic
+  EPIC_DXY, default DXY) not going the same way as the trade, the last 1H break of structure the same way, the 1H trend
+  strong enough. New tested settings in V20. Messages and stop management did not change.
 
 v29.3 — FIX (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal): the GOLD signals had stopped since the v28 update
   (12 Nov). An old trade of the engine before v20 (bot v27, saved without a 'stop') stayed open in the saved state, and
@@ -688,22 +694,21 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
 # == V20 START ==
 V20 = {
     "XAUUSD": {
-        "1m": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 12.0, "sfib": 0.618, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [-282.95, 649.59, 582.23, 2265.04]},
+        "1m": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 12.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "4h:1", "vmax": 2.0, "years": [-26.77, 582.25, 2003.05, 2711.22]},
         "5m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 0.0, "sfib": 0.618, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [596.5, 289.0, 1939.5, 4251.61]},
         "15m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 1, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [279.49, 222.73, 1379.99, 1381.03]},
         "30m": {"L": 8, "R": 1, "minleg": 3.0, "maxleg": 8.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "1d", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [400.27, 835.11, 1225.37, 2599.81]},
         "1h": {"L": 8, "R": 1, "minleg": 0.5, "maxleg": 0.0, "sfib": 0.786, "slb": 0.25, "tps": [0.618, 1.0, 1.618], "trend": 0, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [1036.15, 857.06, 1992.85, 4507.1]},
     },
     "NAS100": {
-        "5m": {"L": 30, "R": 1, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.5, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [114.77, 580.93, 99.44, 297.27]},
+        "5m": {"L": 30, "R": 1, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.5, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "hst": "1h:5:2", "years": [269.05, 740.08, 343.96, 650.2]},
         "15m": {"L": 20, "R": 3, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [208.04, 344.89, 252.34, 162.55]},
         "30m": {"L": 20, "R": 1, "minleg": 3.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.272, 0.618, 1.0], "trend": 0, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [245.93, 1337.54, 476.3, 648.68]},
-        "1h": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [695.99, 1117.7, 1246.28, 980.13]},
+        "1h": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "years": [701.97, 1118.6, 1361.54, 1293.41]},
     },
     "US30": {
-        "5m": {"L": 12, "R": 2, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [-158.21, 319.82, 238.1, -269.53]},
-        "15m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 0.0, "sfib": 0.618, "slb": 0.1, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [-32.08, 662.5, -272.56, -259.02]},
-        "30m": {"L": 3, "R": 1, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.5, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "mid", "stack": 2, "start": 0, "end": 1440, "fvg": True, "years": [129.87, 991.34, 169.12, -11.78]},
+        "5m": {"L": 12, "R": 2, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "dxy": "1h:1", "hst": "1h:5:2", "years": [17.08, 128.14, 618.81, 34.06]},
+        "30m": {"L": 3, "R": 1, "minleg": 0.5, "maxleg": 8.0, "sfib": 1.0, "slb": 0.5, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "mid", "stack": 2, "start": 0, "end": 1440, "fvg": True, "draw": 900, "dxy": "4h:1", "years": [633.53, 1062.4, 872.52, 1353.73]},
         "1h": {"L": 8, "R": 1, "minleg": 1.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.0, "tps": [0.382, 1.0], "trend": 1, "bias": "slow", "stack": 1, "start": 0, "end": 1440, "fvg": False, "years": [94.4, 537.49, 193.29, 272.85]},
     },
 }
@@ -755,7 +760,110 @@ def v20_bias(htf, tc, code, tf):
     return b["1d"]
 
 
-def v20_plan(bars, d, pp, atr, bias, mins, used_t, open_same, open_opp):
+def v20_liq(bars, d, L, R, lb, lo, hi):
+    """v29.4: a resting level between lo and hi on the side of the targets: a swing high (buy) / low (sell) of the
+    chart, made in the last lb candles, that no candle after it traded beyond (the same as the indicator)."""
+    n = len(bars)
+    i = n - 1
+    vals = [b.h for b in bars] if d == 1 else [b.l for b in bars]
+    best = None                                          # the highest high (buy) / lowest low (sell) after candle j
+    for j in range(i, max(L, i - lb) - 1, -1):
+        v = vals[j]
+        if j <= i - R and lo <= v <= hi and (best is None or (v >= best if d == 1 else v <= best)):
+            if v20_swh(vals, j, L, R) if d == 1 else v20_swl(vals, j, L, R):
+                return True
+        best = v if best is None else (max(best, v) if d == 1 else min(best, v))
+    return False
+
+
+def v20_atr_avg(bars, n=14, k=100):
+    """v29.4: the average of the last k values of the ATR n (like ta.sma(ta.atr(14), 100) of the indicator)."""
+    if len(bars) < n + k:
+        return None
+    trs, prev = [], None
+    for b in bars:
+        trs.append(b.h - b.l if prev is None else max(b.h - b.l, abs(b.h - prev), abs(b.l - prev)))
+        prev = b.c
+    atr = sum(trs[:n]) / n
+    vals = [atr]
+    for tr in trs[n:]:
+        atr = (atr * (n - 1) + tr) / n
+        vals.append(atr)
+    return sum(vals[-k:]) / k
+
+
+def v20_hst(bars, L=5, R=2):
+    """v29.4: the direction of the last break of structure of these (finished, higher) candles: +1 a close above the
+    last swing high not broken yet, -1 a close under the last swing low (0 = none yet)."""
+    sh = sl = None
+    dir_ = 0
+    hs, ls = [b.h for b in bars], [b.l for b in bars]
+    for i in range(len(bars)):
+        if i >= L + R:
+            j = i - R
+            if v20_swh(hs, j, L, R):
+                sh = [hs[j], False]
+            if v20_swl(ls, j, L, R):
+                sl = [ls[j], False]
+        if i < 13:
+            continue                                     # like the backtest: no break before the first ATR
+        if sh is not None and not sh[1] and bars[i].c > sh[0]:
+            sh[1], dir_ = True, 1
+        if sl is not None and not sl[1] and bars[i].c < sl[0]:
+            sl[1], dir_ = True, -1
+    return dir_
+
+
+def v20_chop(bars):
+    """v29.4: |EMA 20 - EMA 50| / ATR 14 of the last of these (finished) candles."""
+    if len(bars) < 55:
+        return None
+    closes = [b.c for b in bars]
+    a = calc_atr(bars)
+    if not a:
+        return None
+    return abs(ema_last(closes, 20) - ema_last(closes, 50)) / a
+
+
+DXY_CACHE = {}
+
+
+def dxy_bars(tf, need_after):
+    """v29.4: the dollar index candles of Capital.com (epic EPIC_DXY, default DXY), read again when they were read
+    before the chart candle closed or more than 10 minutes ago. [] when there are none (no filter then)."""
+    c = DXY_CACHE.get(tf)                                # (read at, candles, read OK)
+    now = time.time()
+    if c and now - c[0] < 600 and (c[0] >= need_after or not c[2]):
+        return c[1]                                      # fresh enough, or failed a moment ago (tried again later)
+    bars, ok = (c[1] if c else []), False
+    if provider() == "capital":
+        try:
+            epic = (ENV("EPIC_DXY", "DXY") or "DXY").strip()
+            out = CAPITAL._parse(CAPITAL.get(f"/api/v1/prices/{epic}", {"resolution": CapitalFeed.RES[tf], "max": 1000}))
+            bars, ok = completed(out, 14400 if tf == "4h" else TF_SEC[tf], int(now)), True
+        except Exception as e:
+            log.warning("DXY %s: %s (no dollar filter for 10 minutes)", tf, e)
+    DXY_CACHE[tf] = (now, bars, ok)
+    return bars
+
+
+def v20_ext(sym, tf, pp, tc, htf):
+    """v29.4: what the extra rules of this chart read at the close tc of its candle (finished candles only)."""
+    ext = {}
+    if pp.get("dxy"):
+        dtf = str(pp["dxy"]).split(":")[0]
+        sec = {"15m": 900, "1h": 3600, "4h": 14400}[dtf]
+        bs = dxy_bars(dtf, tc)
+        ext["dxy"] = v20_bias_one(bs, tc, sec) if len(bs) >= 55 else None
+    h1 = [b for b in (htf.get("1h") or []) if b.t + 3600 < tc]
+    if pp.get("hst"):
+        ext["hst"] = v20_hst(h1)
+    if pp.get("chop"):
+        ext["chop"] = v20_chop(h1)
+    return ext
+
+
+def v20_plan(bars, d, pp, atr, bias, mins, used_t, open_same, open_opp, ext=None):
     """The STOP order of side d at the close of bars[-1]: (plan dict, '') or (None, why). bars: closed candles."""
     L, R = int(pp["L"]), int(pp["R"])
     n = len(bars)
@@ -813,6 +921,25 @@ def v20_plan(bars, d, pp, atr, bias, mins, used_t, open_same, open_opp):
         return None, "enough trades this way"
     if (d == 1 and not cs[-1] < E) or (d == -1 and not cs[-1] > E):
         return None, "price is already beyond the entry"
+    if pp.get("age") and (n - 1) - j > int(pp["age"]):     # v29.4: only a young swing
+        return None, "the swing is too old"
+    if pp.get("vmax"):                     # v29.4: no order in a spike (news): the ATR above vmax x its 100-candle average
+        avg = v20_atr_avg(bars)
+        if not (avg and avg > 0 and atr <= float(pp["vmax"]) * avg):
+            return None, "the market is spiking (news?)"
+    if pp.get("draw"):                     # v29.4: resting orders before target 1
+        near = E + d * 0.25 * risk
+        if not v20_liq(bars, d, L, R, int(pp["draw"]), min(near, G[0]), max(near, G[0])):
+            return None, "no resting orders before target 1"
+    ext = ext or {}
+    if pp.get("dxy") and ext.get("dxy") is not None:
+        b_, mode = ext["dxy"], int(str(pp["dxy"]).split(":")[1])
+        if not ((b_ == -d) if mode == 2 else (b_ != d)):
+            return None, "the dollar (DXY) goes against it"
+    if pp.get("hst") and ext.get("hst", 0) != d:
+        return None, "the 1H structure is the other way"
+    if pp.get("chop") and (ext.get("chop") is None or ext["chop"] < float(pp["chop"])):
+        return None, "no clear 1H trend"
     ob = kb
     for q in range(kb, max(kb - 5, 0) - 1, -1):
         if (bars[q].c < bars[q].o) if d == 1 else (bars[q].c > bars[q].o):
@@ -2668,10 +2795,11 @@ class Engine:
             atr = calc_atr(bars)
             htf = bias_info.get("htf") or {}
             bias = v20_bias(htf, tc, pp.get("bias", "tf"), tf) if htf else bias_info.get("now", 0)
+            ext = v20_ext(sym, tf, pp, tc, htf)
             for d in (1, -1):
                 cur = [o for o in self.orders if o["sym"] == sym and o["tf"] == tf and o["state"] == PENDING and o["dir"] == d]
                 plan, why = v20_plan(bars, d, pp, atr, bias, mins, ps.get("used", {}).get(str(d)),
-                                     len(self._v20_open(sym, tf, d)), len(self._v20_open(sym, tf, -d)))
+                                     len(self._v20_open(sym, tf, d)), len(self._v20_open(sym, tf, -d)), ext)
                 keep = None
                 for o in cur:
                     if plan and o.get("swing_t") == plan["swing_t"] and keep is None:
@@ -2936,7 +3064,9 @@ def bias_info_at(sym, t, cache, fallback):
         bs[tf] = bias_from_bars(closed)
         if tf == "1d" and closed:
             datr = calc_atr(closed) or datr
-    return make_info(bs, datr, t)
+    info = make_info(bs, datr, t)
+    info["htf"] = htf                                 # v29.4: a missed candle reads its trend and extra rules from them too
+    return info
 
 def make_info(bs, datr, ts):
     """Trend per chart timeframe from the four higher-timeframe trends (same rules as the indicator)."""
@@ -3003,6 +3133,15 @@ def run(symbols, tfs, tg, once=False, minutes=0):
     nxt_live, last_poll = {}, 0.0
     live_ok = LIVE and MINUTES and provider() == "capital"
     log.info("Instant follow-up: %s", f"on (the forming minute every {LIVE_SEC:g}s)" if live_ok else "off (finished minutes)")
+    if any(pp.get("dxy") for sd in V20.values() for pp in sd.values()):     # v29.4: can the dollar index be read?
+        epic_ = (ENV("EPIC_DXY", "DXY") or "DXY").strip()
+        xb = dxy_bars("1h", 0)
+        if xb:
+            log.info("DXY check OK (Capital.com epic %s): %d finished 1H candles, the last one %s UTC", epic_, len(xb),
+                     time.strftime("%Y-%m-%d %H:%M", time.gmtime(xb[-1].t)))
+        else:
+            log.warning("DXY check FAILED (Capital.com epic %s): no dollar index prices, the dollar filter is off "
+                        "(set the secret EPIC_DXY to the right epic)", epic_)
 
     def minute_bars(sym, now):
         if sym not in m1c or m1c[sym][0] != now:
