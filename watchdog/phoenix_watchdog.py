@@ -646,7 +646,9 @@ class Watchdog:
         self.st["last_run"] = res
         if not alert:
             return
-        rows = [f"• {label}: {times(n)}" for label, n, key in res["crit"] if not (key and key in self.st["issues"])]
+        rows = [f"• {label}: {times(n)}" for label, n, key in res["crit"]
+                if not (key and key in self.st["issues"])
+                and not (key == "tg_channel" and not self.sig.channel)]     # no channel wanted: not news
         if rows:
             when = f" ({clock(end)})" if end else ""
             self.say(f"⚠️ <b>ملاحظة من آخر تشغيلة للبوت</b>{when}\n" + "\n".join(rows))
@@ -718,8 +720,10 @@ class Watchdog:
         if not self.own_bot:
             self.st["tg_dead"] = False
             self.flush()
-        if not self.sig.channel:
-            tgs.update(ok=None, text="ما في قناة محددة (TELEGRAM_CHAT_ID)")
+        if not self.sig.channel:                            # no channel: the bot sends to its subscribers only
+            tgs.update(ok=True, text="بوت الإشارات شغّال وبيبعت عالخاص (بلا قناة)")
+            self.st["issues"].pop("tg_channel", None)       # an old channel warning no longer applies: dropped quietly
+            self.st["fails"].pop("tg_channel", None)
             return
         ok, m, code = self.sig.call("getChatMember", {"chat_id": self.sig.channel, "user_id": me["id"]})
         if not ok:
@@ -875,7 +879,7 @@ class Watchdog:
             out.append(f"   💥 وقع {times(c24)}")
         t = S.get("tg")
         if t:
-            out.append("📣 القناة: " + {True: "✅ ", False: "🔴 ", None: "⚪ "}[t.get("ok")] + t.get("text", ""))
+            out.append("📣 تلغرام: " + {True: "✅ ", False: "🔴 ", None: "⚪ "}[t.get("ok")] + t.get("text", ""))
         c = S.get("capital")
         if c:
             bid = c.get("bid")

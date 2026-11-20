@@ -322,6 +322,22 @@ class Services(Case):
         self.assertIn("رجع يقدر ينشر", out)
         self.assertIn("تشغيلته الجاية", out)
 
+    def test_no_channel_wanted_drops_the_old_warning(self):
+        self.tg.member = None                                # the old wrong channel: a warning is open
+        self.due_now("tg")
+        self.tick()
+        self.tick()
+        self.assertIn("البوت مش لاقي القناة", self.texts())
+        self.tg.channel = ""                                 # TELEGRAM_CHAT_ID removed: private subscribers only
+        self.gh.add_run(9, "completed", start=self.clock - 7 * 3600, end=self.clock - 60, conclusion="success")
+        self.gh.logs[9] = "x ERROR TELEGRAM CHECK FAILED: cannot read channel ***\n"
+        self.tick(15)
+        self.tick()
+        self.assertEqual(self.texts(), "")                   # no ✅ about a channel, no note from the old run's log
+        rep = self.wd.report()
+        self.assertIn("بيبعت عالخاص", rep)
+        self.assertIn("كل شي تمام", rep)
+
     def test_channel_not_found_explains_the_fix(self):
         self.tg.member = None                                # getChatMember: chat not found (the bot's logs today)
         self.due_now("tg")
