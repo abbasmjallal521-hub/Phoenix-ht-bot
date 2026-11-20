@@ -71,23 +71,29 @@ class FakeGH:
 
 
 class FakeTG:
-    def __init__(self):
-        self.sent, self.channel = [], "@phoenixhttrading"
+    def __init__(self, username="Phoenix_ht_smc"):
+        self.sent, self.channel, self.username = [], "@phoenixhttrading", username
         self.member = {"status": "administrator", "can_post_messages": True}
-        self.token_ok, self.deliver = True, True
+        self.token_ok, self.deliver, self.refuse = True, True, None     # refuse: 403 = Start never pressed
+        self.last_error = None
 
     def call(self, method, payload):
         if not self.token_ok:
             return False, "Unauthorized", 401
         if method == "getMe":
-            return True, {"id": 42, "username": "Phoenix_ht_smc"}, 200
+            return True, self.me(), 200
         if method == "getChatMember":
             return (True, self.member, 200) if self.member else (False, "chat not found", 400)
         return True, {}, 200
 
+    def me(self):
+        return {"id": 42, "username": self.username}
+
     def send(self, text):
-        if not self.deliver:
+        if self.refuse or not self.deliver or not self.token_ok:
+            self.last_error = (self.refuse or (401 if not self.token_ok else 0), "refused")
             return False
+        self.last_error = None
         self.sent.append(text)
         return True
 
@@ -395,6 +401,70 @@ class ReportRun(Case):
         self.assertEqual(self.tg.sent, [])                   # no hello, no alert
         self.assertEqual(self.gh.dispatched, [])             # never starts anything
         self.assertIn("🔴 واقف هلق", wd.report())
+
+
+class OwnBot(Case):
+    """WATCHDOG_BOT_TOKEN set: the alerts come from the watchdog's own bot, never mixed with the trades."""
+
+    def setUp(self):
+        super().setUp()
+        self.sig = FakeTG()                                  # the signal bot
+        self.own = FakeTG(username="Phoenix_Watchdog_bot")   # the watchdog's own bot
+        self.wd = self.make_own()
+        self.gh.add_run(1, "in_progress", start=T0 - 3600)
+
+    def make_own(self):
+        wd = pw.Watchdog(self.gh, self.own, sig=self.sig)
+        wd.probe_capital = lambda: dict(self.cap)
+        wd.probe_web = lambda url: dict(self.web)
+        wd.app_url = "https://app.example"
+        return wd
+
+    def test_everything_goes_to_its_own_chat(self):
+        self.tick()
+        out = "\n".join(self.own.sent)
+        self.assertIn("لحاله للتحذيرات", out)
+        self.assertIn("تقرير المراقب", out)
+        self.assertNotIn("WATCHDOG_BOT_TOKEN", out)
+        self.assertEqual(self.sig.sent, [])                  # nothing in the signal bot's chat
+
+    def test_start_not_pressed_one_note_through_the_signal_bot(self):
+        self.own.refuse = 403
+        self.tick()
+        self.tick()
+        self.assertEqual(len(self.sig.sent), 1)              # once a day only
+        self.assertIn("@Phoenix_Watchdog_bot", self.sig.sent[0])
+        self.assertIn("Start", self.sig.sent[0])
+        self.own.refuse = None                               # Start pressed
+        self.tick()
+        out = "\n".join(self.own.sent)
+        self.assertIn("أهلا، أنا المراقب", out)              # what waited is delivered
+        self.assertIn("تقرير المراقب", out)
+        self.assertEqual(self.wd.outbox, [])
+
+    def test_signal_bot_token_broken_is_told_by_the_own_bot(self):
+        self.tick()
+        self.own.sent.clear()
+        self.sig.token_ok = False
+        self.wd.st["due"]["tg"] = 0
+        self.tick()
+        self.tick()
+        out = "\n".join(self.own.sent)
+        self.assertIn("توكن بوت الإشارات ما عاد شغال", out)
+        self.assertIn("TELEGRAM_BOT_TOKEN", out)
+        self.sig.token_ok = True
+        self.tick(15)
+        self.tick()
+        self.assertIn("بوت الإشارات رجع يشتغل عالتلغرام", "\n".join(self.own.sent))
+
+    def test_moving_to_the_own_bot_says_hello_there(self):
+        old = self.make()                                    # first without WATCHDOG_BOT_TOKEN
+        old.tick()
+        old.save()
+        self.assertIn("WATCHDOG_BOT_TOKEN", "\n".join(self.tg.sent))
+        self.wd = self.make_own()                            # then the secret is added
+        self.tick()
+        self.assertIn("لحاله للتحذيرات", "\n".join(self.own.sent))
 
 
 if __name__ == "__main__":
