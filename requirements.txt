@@ -1,2 +1,3 @@
 requests>=2.31
 tzdata
+matplotlib>=3.11
