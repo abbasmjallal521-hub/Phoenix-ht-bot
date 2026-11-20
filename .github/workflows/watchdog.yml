@@ -1,0 +1,77 @@
+name: Phoenix Watchdog
+
+# The watchdog (المراقب) watches the bot, its channel, the prices and the app, and messages the owner on Telegram.
+# Each run watches for about 5h40m and then starts the next one itself, so it never waits for GitHub's schedule
+# (which often runs hours late). The schedule below is only a backup in case that chain ever breaks.
+# Merging a change to the watchdog starts it. "Run workflow" with "report_now" sends the status report at once.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "watchdog/**"
+      - ".github/workflows/watchdog.yml"
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      report_now:
+        description: "Send the status report now (one round of checks, then stop)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ inputs.report_now == true && 'phoenix-watchdog-report' || 'phoenix-watchdog' }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write      # read the bot's runs and logs, start the bot again, start the next watch
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests tzdata
+      - name: Bot state (read only, to know the owner's chat)
+        uses: actions/cache/restore@v4
+        with:
+          path: phoenix_state.json
+          key: phoenix-state-watchdog-read
+          restore-keys: phoenix-state-
+      - name: Watchdog memory
+        uses: actions/cache/restore@v4
+        with:
+          path: watchdog_state.json
+          key: watchdog-state-latest
+          restore-keys: watchdog-state-
+      - name: Watch
+        id: watch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCHDOG_CHAT_ID: ${{ secrets.WATCHDOG_CHAT_ID }}  # optional: your Telegram id (else the bot's owner)
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+          CAPITAL_ENV: live      # the bot's logs show its key logs in on the live account (demo is tried second)
+          APP_URL: ${{ secrets.APP_URL }}                    # optional: the app's link (kept secret: this repo is public)
+          LINK_URL: ${{ secrets.LINK_URL }}                  # optional: the link page
+        run: python watchdog/phoenix_watchdog.py ${{ inputs.report_now == true && '--report' || '--minutes 340' }}
+      - name: Save watchdog memory
+        if: always() && inputs.report_now != true
+        uses: actions/cache/save@v4
+        with:
+          path: watchdog_state.json
+          key: watchdog-state-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Start the next watch
+        if: always() && steps.watch.outputs.chain == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run watchdog.yml --ref main --repo "${{ github.repository }}"
