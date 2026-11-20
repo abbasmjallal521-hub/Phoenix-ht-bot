@@ -21,7 +21,7 @@ on:
 
 concurrency:
   group: ${{ inputs.report_now == true && 'phoenix-watchdog-report' || 'phoenix-watchdog' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'push' }}   # a merged change replaces the running watch at once
 
 permissions:
   actions: write      # read the bot's runs and logs, start the bot again, start the next watch
