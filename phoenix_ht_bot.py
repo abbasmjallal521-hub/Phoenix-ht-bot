@@ -1,13 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PHOENIX HAZ SMC — Telegram Signal Bot  (v29.4)
+PHOENIX HAZ SMC — Telegram Signal Bot  (v29.6)
 Developed by: The Phoenix HAZ Syndicate
 
 Reads the market (Gold, Silver, Dow, Nasdaq, Oil), builds the same pending-order
 plan as the Phoenix HAZ SMC indicator (range + ATR + 4-timeframe trend) and posts
 each order to a Telegram channel: entry, stop, target, timeframe. It then follows
 each order and posts when it is filled, hits the target, hits the stop, or expires.
+
+v29.6 — THE MORNING PICTURE AND THE NEWS (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal). Every subscriber
+  chooses in the menu (☀️ Morning analysis & news) whether he wants it, the instruments, the timeframe of the picture
+  (15M / 1H / 4H) and the kinds of news (the strong or medium US calendar, gold, US stocks, the Fed and the dollar,
+  the world economy). At MORNING_HOUR (Beirut, Monday to Friday) he gets the morning message (the market now, today's
+  US calendar in Beirut time with the Arabic names, the headlines he chose, each one a link), then one picture per
+  instrument: the candles, the order blocks of the last breaks of structure, yesterday's high and low (PDH / PDL) and
+  the two break scenarios of the method (BUY STOP above the swing high, SELL STOP below the swing low, with the stop
+  and the targets on the Fibonacci of the move, the same swings as the orders), written in the caption too. /morning
+  or 👁 in the menu sends it at once (once every 3 minutes). The channel gets gold, Nasdaq and Dow on 1H with the
+  strong US calendar, the gold and the US stocks news (MORNING_CHANNEL_SYMS, MORNING_CHANNEL_NEWS, MORNING_TF). The
+  pictures are made once and sent to everyone in the background, so the trades are followed meanwhile. Free sources:
+  the ForexFactory calendar (CALENDAR_URL) and the Google News RSS search (NEWS_AR_EDITION for the Arabic headlines).
+  Needs matplotlib (requirements.txt); without it the levels are sent as text. --morning sends the morning now
+  (with --dry-run: printed, and the pictures saved in morning_preview/). Signals, rules and stop management did not
+  change.
+
+v29.5 — the same as the indicator v20.7 (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal): gold 1m and 30m
+  trade only with the structure of their own chart (no order against the last break of structure of the chart: tested
+  better in 3 of 4 years with a smaller drop); the test years of every chart use the prices up to 19 Nov 2026; the reasons of the
+  v29.4 rules are written in Arabic too. A trade that got target 1 and closed at the entry was already counted as a
+  win (W) in the reports. Messages and stop management did not change.
 
 v29.4 — the extra rules per chart of the indicator v20.6 (THE PHOENIX HAZ SYNDICATE, development @Abbas Mjallal),
   tested chart by chart (2023 - 2026, every year alone): on some charts the stop beyond the order block (Fibonacci
@@ -114,7 +136,9 @@ Usage:
   python phoenix_ht_bot.py                    # run for real (needs .env)
   python phoenix_ht_bot.py --minutes 340      # run 340 minutes, then save and exit (GitHub Actions)
 """
-import os, bisect, re, sys, json, time, html, random, argparse, logging
+import os, bisect, re, sys, json, time, html, random, argparse, logging, threading
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from collections import namedtuple
 from datetime import datetime, timezone, timedelta, date
 from zoneinfo import ZoneInfo
@@ -694,22 +718,22 @@ def summarize(ledger, syms, tfs, lot, ref_ts):
 # == V20 START ==
 V20 = {
     "XAUUSD": {
-        "1m": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 12.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "4h:1", "vmax": 2.0, "years": [-26.77, 582.25, 2003.05, 2711.22]},
-        "5m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 0.0, "sfib": 0.618, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [596.5, 289.0, 1939.5, 4251.61]},
-        "15m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 1, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [279.49, 222.73, 1379.99, 1381.03]},
-        "30m": {"L": 8, "R": 1, "minleg": 3.0, "maxleg": 8.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "1d", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [400.27, 835.11, 1225.37, 2599.81]},
-        "1h": {"L": 8, "R": 1, "minleg": 0.5, "maxleg": 0.0, "sfib": 0.786, "slb": 0.25, "tps": [0.618, 1.0, 1.618], "trend": 0, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [1036.15, 857.06, 1992.85, 4507.1]},
+        "1m": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 12.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "bos": 1, "fvg": False, "dxy": "4h:1", "vmax": 2.0, "years": [13.95, 667.87, 1955.6, 3506.33]},
+        "5m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 0.0, "sfib": 0.618, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [595.22, 289.65, 1939.5, 4661.58]},
+        "15m": {"L": 30, "R": 1, "minleg": 4.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 1, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [279.49, 222.73, 1379.67, 1327.47]},
+        "30m": {"L": 8, "R": 1, "minleg": 3.0, "maxleg": 8.0, "sfib": 1.0, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "1d", "stack": 3, "start": 0, "end": 1440, "bos": 1, "fvg": False, "years": [682.9, 522.7, 1391.49, 3841.4]},
+        "1h": {"L": 8, "R": 1, "minleg": 0.5, "maxleg": 0.0, "sfib": 0.786, "slb": 0.25, "tps": [0.618, 1.0, 1.618], "trend": 0, "bias": "fast", "stack": 3, "start": 0, "end": 1440, "fvg": False, "years": [1037.12, 857.06, 1992.53, 5048.59]},
     },
     "NAS100": {
-        "5m": {"L": 30, "R": 1, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.5, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "hst": "1h:5:2", "years": [269.05, 740.08, 343.96, 650.2]},
-        "15m": {"L": 20, "R": 3, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [208.04, 344.89, 252.34, 162.55]},
-        "30m": {"L": 20, "R": 1, "minleg": 3.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.272, 0.618, 1.0], "trend": 0, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [245.93, 1337.54, 476.3, 648.68]},
-        "1h": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "years": [701.97, 1118.6, 1361.54, 1293.41]},
+        "5m": {"L": 30, "R": 1, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.5, "slb": 0.0, "tps": [0.618, 1.0, 1.618], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "hst": "1h:5:2", "years": [268.86, 739.79, 343.73, 345.06]},
+        "15m": {"L": 20, "R": 3, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.618, "slb": 1.0, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [226.62, 344.91, 252.36, 1.41]},
+        "30m": {"L": 20, "R": 1, "minleg": 3.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.272, 0.618, 1.0], "trend": 0, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "years": [245.4, 1337.21, 475.98, 723.59]},
+        "1h": {"L": 30, "R": 2, "minleg": 6.0, "maxleg": 0.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "mid", "stack": 3, "start": 0, "end": 1440, "fvg": False, "dxy": "1h:1", "years": [701.69, 1118.81, 1361.17, 1370.3]},
     },
     "US30": {
-        "5m": {"L": 12, "R": 2, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "dxy": "1h:1", "hst": "1h:5:2", "years": [17.08, 128.14, 618.81, 34.06]},
-        "30m": {"L": 3, "R": 1, "minleg": 0.5, "maxleg": 8.0, "sfib": 1.0, "slb": 0.5, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "mid", "stack": 2, "start": 0, "end": 1440, "fvg": True, "draw": 900, "dxy": "4h:1", "years": [633.53, 1062.4, 872.52, 1353.73]},
-        "1h": {"L": 8, "R": 1, "minleg": 1.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.0, "tps": [0.382, 1.0], "trend": 1, "bias": "slow", "stack": 1, "start": 0, "end": 1440, "fvg": False, "years": [94.4, 537.49, 193.29, 272.85]},
+        "5m": {"L": 12, "R": 2, "minleg": 0.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.5, "tps": [0.382, 0.618, 1.0], "trend": 2, "bias": "slow", "stack": 3, "start": 0, "end": 1440, "fvg": True, "dxy": "1h:1", "hst": "1h:5:2", "years": [18.5, 132.19, 621.52, 182.67]},
+        "30m": {"L": 3, "R": 1, "minleg": 0.5, "maxleg": 8.0, "sfib": 1.0, "slb": 0.5, "tps": [0.618, 1.0, 1.618], "trend": 1, "bias": "mid", "stack": 2, "start": 0, "end": 1440, "fvg": True, "draw": 900, "dxy": "4h:1", "years": [641.29, 1067.85, 873.59, 1511.07]},
+        "1h": {"L": 8, "R": 1, "minleg": 1.5, "maxleg": 8.0, "sfib": 0.786, "slb": 0.0, "tps": [0.382, 1.0], "trend": 1, "bias": "slow", "stack": 1, "start": 0, "end": 1440, "fvg": False, "years": [59.16, 541.9, 197.84, 223.4]},
     },
 }
 
@@ -807,6 +831,26 @@ def v20_hst(bars, L=5, R=2):
                 sl = [ls[j], False]
         if i < 13:
             continue                                     # like the backtest: no break before the first ATR
+        if sh is not None and not sh[1] and bars[i].c > sh[0]:
+            sh[1], dir_ = True, 1
+        if sl is not None and not sl[1] and bars[i].c < sl[0]:
+            sl[1], dir_ = True, -1
+    return dir_
+
+
+def v20_lastbos(bars, L, R):
+    """v29.5: the direction of the last break of structure of the chart itself (the same as the indicator v20.7): +1 a
+    close above the last swing high not broken yet, -1 a close under the last swing low, 0 none yet."""
+    sh = sl = None
+    dir_ = 0
+    hs, ls = [b.h for b in bars], [b.l for b in bars]
+    for i in range(len(bars)):
+        if i >= L + R:
+            j = i - R
+            if v20_swh(hs, j, L, R):
+                sh = [hs[j], False]
+            if v20_swl(ls, j, L, R):
+                sl = [ls[j], False]
         if sh is not None and not sh[1] and bars[i].c > sh[0]:
             sh[1], dir_ = True, 1
         if sl is not None and not sl[1] and bars[i].c < sl[0]:
@@ -938,6 +982,8 @@ def v20_plan(bars, d, pp, atr, bias, mins, used_t, open_same, open_opp, ext=None
             return None, "the dollar (DXY) goes against it"
     if pp.get("hst") and ext.get("hst", 0) != d:
         return None, "the 1H structure is the other way"
+    if pp.get("bos") and v20_lastbos(bars, L, R) == -d:     # v29.5: not against the last break of structure of the chart
+        return None, "the chart structure is the other way"
     if pp.get("chop") and (ext.get("chop") is None or ext["chop"] < float(pp["chop"])):
         return None, "no clear 1H trend"
     ob = kb
@@ -1355,7 +1401,8 @@ def msg_menu(sub):
     return (f"⚙️ <b>PHOENIX HAZ SMC</b>  ·  <i>Signal settings · الإعدادات</i>\n{LINE}\n"
             "Tap to turn an instrument or timeframe on or off.\n"
             "اضغط على الزر لتفعيل أو إيقاف أي أداة أو فريم.\n\n"
-            f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n\n"
+            f"📈 Instruments  <b>{s}</b>\n⏱ Timeframes  <b>{t}</b>\n💼 Lot  <b>{sub['lot']:g}</b>  ·  change it: /lot 0.1\n"
+            f"☀️ Morning · الصبح  <b>{'on · شغّال' if (sub.get('am') or {}).get('on', 1) else 'off · موقّف'}</b>  ·  /morning\n\n"
             f"💰 /price  ·  📊 /report  ·  🔎 /status  ·  ⏸ /stop\n{SIGN}")
 
 def menu_markup(sub, owner=False):
@@ -1369,6 +1416,8 @@ def menu_markup(sub, owner=False):
         rows.append([{"text": ("✅ " if x in sub["tfs"] else "▫️ ") + x.upper(), "callback_data": "t:" + x} for x in tfs[i:i + 3]])
     rows.append([{"text": "✨ All instruments", "callback_data": "sa"}, {"text": "✨ All timeframes", "callback_data": "ta"}])
     rows.append([{"text": "🧹 Clear", "callback_data": "clr"}, {"text": "📊 Report", "callback_data": "rep"}])
+    rows.append([{"text": "☀️ Morning analysis & news" if sub.get("lang") == "en" else "☀️ تحليل الصبح والأخبار",
+                  "callback_data": "am"}])
     rows.append([{"text": "🌐 English" if sub.get("lang") != "en" else "🌐 عربي", "callback_data": "lang"}])
     if owner:
         rows.append([{"text": "🎯 Calibrate prices · ظبّط الأسعار", "callback_data": "cal"}])
@@ -1390,7 +1439,8 @@ def msg_welcome(name):
             "<b>What you get · شو بيوصلك</b>\n"
             "🎯 Every order with the price now, entry, stop and 3 targets (with their Fibonacci level)\n"
             "⚡ Live updates: filled, TP1 → stop to entry, TP2 → stop to TP1, closed\n"
-            "☀️ A morning brief and 🌙 a market-close summary\n"
+            "☀️ A morning picture (zones, break scenarios) with the news you choose, and 🌙 a market-close summary\n"
+            "☀️ صورة الصبح (المناطق وسيناريو الكسر) مع الأخبار يلّي بتختارها، و🌙 ملخّص سكّرة السوق\n"
             "📊 /report: today, week and month in points and $\n\n"
             "<b>How to start · كيف تبلّش</b>\n"
             "1️⃣ Choose instruments and timeframes below · اختار الأدوات والفريمات تحت\n"
@@ -1417,17 +1467,34 @@ def day_name(dt):
     ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"][dt.weekday()]
     return f"{dt.strftime('%A %d %B')} · {ar}"
 
-def msg_morning(sub, snap, dt, lines_i):
+MONTHS_AR = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول",
+             "تشرين الثاني", "كانون الأول"]
+
+
+def msg_morning(sub, snap, dt, lines_i, extra=""):
+    """v29.6: good morning, the market now, today's US calendar and the headlines he chose (extra), the instruments he
+    follows, one line on the risk and a short phrase. One language per reader."""
     who = html.escape(sub.get("name") or "")
     en, ar = MORNING_LINES[lines_i % len(MORNING_LINES)]
-    s, t = sel_text(sub)
-    syms = sub["syms"] or list(INSTRUMENTS)
-    return (f"☀️ <b>Good morning{', ' + who if who else ''}</b> · صباح الخير\n{LINE}\n"
-            f"🗓 {day_name(dt)}\n\n<b>Market now · السوق هلق</b>\n{snapshot_rows(syms, snap)}\n\n"
-            f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>\n"
-            f"🛡 Risk 1–2% per trade. Put the STOP order as it comes; at TP1 move the stop to the entry, at TP2 to TP1 "
-            f"(the bot tells you within the minute). Every order shows how its chart did in every test year.\n\n"
-            f"✨ <i>{html.escape(en)}</i>\n<i>{html.escape(ar)}</i>" + footer())
+    syms = sub.get("syms") or (sub.get("am") or {}).get("syms") or list(INSTRUMENTS)
+    day_ar = ["الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"][dt.weekday()]
+    out = [bi(f"☀️ <b>صباح الخير{' يا ' + who if who else ''}</b>", f"☀️ <b>Good morning{', ' + who if who else ''}</b>"), LINE,
+           bi(f"🗓 {day_ar} {dt.day} {MONTHS_AR[dt.month - 1]}", f"🗓 {dt.strftime('%A %d %B')}"), "",
+           bi("<b>السوق هلّق</b>", "<b>Market now</b>"), snapshot_rows(syms, snap)]
+    if extra:
+        out += ["", extra]
+    if sub.get("syms") and sub.get("tfs"):
+        s, t = sel_text(sub)
+        out += ["", bi(f"🎯 عم نتابع اليوم: <b>{s}</b> · <b>{t}</b>", f"🎯 Today we follow: <b>{s}</b> · <b>{t}</b>")]
+    out += [bi("🛡 خاطر 1–2% بالصفقة. حطّ أمر الـ STOP متل ما بيوصل: عند هدف 1 الستوب عالدخول، وعند هدف 2 عهدف 1، والبوت "
+               "بيقلّك بنفس الدقيقة.",
+               "🛡 Risk 1–2% per trade. Put the STOP order as it comes: at TP1 the stop goes to the entry, at TP2 to TP1, "
+               "and the bot tells you within the minute."),
+            "", bi(f"✨ <i>{html.escape(ar)}</i>", f"✨ <i>{html.escape(en)}</i>")]
+    if extra:
+        out.append(bi("<i>المصادر المجانية: ForexFactory للأجندة و Google News للأخبار.</i>",
+                      "<i>Free sources: ForexFactory for the calendar, Google News for the headlines.</i>"))
+    return "\n".join(out) + footer()
 
 def stats_text(sub, ledger, ref_ts):
     """Every instrument with every timeframe (Gold 5M, Gold 15M ...), then each timeframe for all
@@ -1487,6 +1554,7 @@ def msg_report(sub, stats, title="REPORT"):
 
 HELP = (f"🔥 <b>PHOENIX HAZ SMC</b>\n{LINE}\n/start · choose instruments and timeframes\n/price · prices now\n"
         "/status · what you receive\n/lot 0.1 · lot size for the money numbers\n/report · today, week, month\n"
+        "/morning · the morning picture and news now (/morning off · on)\n"
         "/lang en · English only (/lang ar · Arabic + English)\n/stop · pause all signals\n\n" + SIGN)
 
 def msg_dayend(o, r, gain_pts):
@@ -1495,10 +1563,10 @@ def msg_dayend(o, r, gain_pts):
             f"{html.escape(short(o))}" + footer())
 
 BOT_COMMANDS = [("start", "Choose instruments and timeframes"), ("price", "Prices now"), ("report", "Today, week, month"),
-                ("status", "What you receive"), ("lot", "Lot size, e.g. /lot 0.1"), ("lang", "English only / Arabic + English"),
+                ("status", "What you receive"), ("morning", "Morning picture and news now"), ("lot", "Lot size, e.g. /lot 0.1"), ("lang", "English only / Arabic + English"),
                 ("stop", "Pause all signals"), ("help", "Help")]
 BOT_DESCRIPTION = ("🔥 PHOENIX HAZ SMC v20\nFibonacci breakout orders for Gold, Nasdaq and Dow: price now, entry, stop, "
-                   "3 targets and live follow-up (when to move the stop). Morning brief and market-close summary.\n"
+                   "3 targets and live follow-up (when to move the stop). Morning picture with the zones and the news, market-close summary.\n"
                    "إشارات أوامر معلّقة على الذهب والفضة والداو والناسداك والنفط مع متابعة مباشرة.\n"
                    "Press START · اضغط START\n⚠️ Educational only, not financial advice.")
 BOT_SHORT = "Gold · Silver · Dow · Nasdaq · Oil signals with live follow-up · The Phoenix HAZ Syndicate"
@@ -1750,6 +1818,13 @@ WHY_AR = {
     "the other order was filled (never a buy and a sell together)": "تفعّل الأمر التاني (ما منفتح شراء وبيع سوا)",
     "this chart has no tested setting": "هالشارت ما إلو إعدادات مجرّبة",
     "the order was never filled": "الأمر ما تفعّل بالوقت",
+    "the market is spiking (news?)": "السوق عم يتحرّك قوي كتير (خبر؟)",
+    "no resting orders before target 1": "ما في سيولة (أوامر معلّقة) قبل هدف 1",
+    "the dollar (DXY) goes against it": "الدولار ماشي ضد الصفقة",
+    "the 1H structure is the other way": "هيكل الساعة بالعكس",
+    "the chart structure is the other way": "هيكل الشارت بالعكس (آخر كسر هيكل)",
+    "the swing is too old": "القمة/القاع صارت قديمة",
+    "no clear 1H trend": "ما في اتجاه واضح عالساعة",
 }
 
 
@@ -1759,6 +1834,570 @@ def msg_v20_cancel(o, reason):
             + f"\n<s>{html.escape(short(o))}</s>")
 
 # ───────────────────────────── telegram ─────────────────────────────
+# ───────────────────────────── v29.6: the morning picture and the news ─────────────────────────────
+# Every subscriber chooses in the menu (☀️ Morning analysis & news): on / off, the instruments of the picture, its
+# timeframe (15M / 1H / 4H) and the kinds of news. At MORNING_HOUR (MSG_TIMEZONE, Monday to Friday) he gets the
+# morning message (the market now, today's US calendar and the headlines he chose), then one picture per instrument:
+# the candles, the order blocks (OB zones) of the last breaks of structure, yesterday's high and low (PDH / PDL) and
+# the two break scenarios of the method: above the swing high (BUY STOP and its Fibonacci targets) and below the
+# swing low (SELL STOP and its targets), written in the caption too. /morning (or 👁 in the menu) sends it at once.
+# Free sources: the ForexFactory calendar (faireconomy JSON) and the Google News RSS search.
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle, FancyArrowPatch
+except Exception:                                      # no matplotlib: the morning goes without pictures (levels as text)
+    plt = None
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display as _bidi_display
+except Exception:                                      # no Arabic shaping: the picture keeps its English labels only
+    arabic_reshaper = None
+
+AM_ON = ENV("MORNING_PICS", "1") == "1"                 # the morning pictures (0 = the morning message only)
+AM_TFS = ("15m", "1h", "4h")
+AM_TF_DEFAULT = (ENV("MORNING_TF", "1h") or "1h").strip().lower()
+AM_TF_DEFAULT = AM_TF_DEFAULT if AM_TF_DEFAULT in AM_TFS else "1h"
+AM_BARS = int(ENV("MORNING_BARS", "110"))               # candles drawn in a picture
+AM_NEWS_MAX = int(ENV("MORNING_NEWS_MAX", "3"))         # headlines per kind of news
+AM_PREVIEW_SEC = 180                                    # 👁 / /morning: once every 3 minutes per subscriber
+CAL_URL = ENV("CALENDAR_URL", "https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+NEWS_AR_EDITION = (ENV("NEWS_AR_EDITION", "EG:ar") or "EG:ar").strip()   # Google News edition of the Arabic headlines
+# key: (Arabic button, English button, Google News search in Arabic, in English); no search = the calendar
+NEWS_KINDS = {
+    "cal3": ("📅 أخبار الدولار القوية", "📅 USD high impact", None, None),
+    "cal2": ("📅 أخبار الدولار المتوسطة", "📅 USD medium impact", None, None),
+    "gold": ("🥇 أخبار الذهب", "🥇 Gold news", '"أونصة الذهب" OR "الذهب عالميا" OR "المعدن الأصفر"',
+             '"gold price" OR "gold prices" OR "XAU/USD"'),
+    "us": ("🇺🇸 الأسهم الأمريكية", "🇺🇸 US stocks", '"وول ستريت" OR "ناسداك" OR "داو جونز"',
+           '"Wall Street" OR "Nasdaq" OR "Dow Jones"'),
+    "fed": ("🏦 الفيدرالي والدولار", "🏦 Fed and the dollar", '"الفيدرالي" OR "الدولار الأمريكي"',
+            '"Federal Reserve" OR "US dollar"'),
+    "world": ("🌍 الاقتصاد العالمي", "🌍 World economy", '"الاقتصاد العالمي" OR "أسعار النفط"',
+              '"global economy" OR "oil prices"'),
+}
+NEWS_DEFAULT = ["cal3", "gold"]
+AM_CHANNEL_SYMS = [x.strip().upper() for x in (ENV("MORNING_CHANNEL_SYMS", "XAUUSD,NAS100,US30") or "").split(",") if x.strip()]
+AM_CHANNEL_NEWS = [x.strip() for x in (ENV("MORNING_CHANNEL_NEWS", "cal3,gold,us") or "").split(",") if x.strip()]
+SYM_AR = {"XAUUSD": "الذهب", "XAGUSD": "الفضة", "US30": "الداو جونز", "NAS100": "الناسداك", "USOIL": "النفط"}
+AM_TF_AR = {"15m": "ربع ساعة", "1h": "ساعة", "4h": "4 ساعات"}
+CAL_AR = {   # the usual US news of the calendar, in Arabic (any other keeps its English name)
+    "Non-Farm Employment Change": "الوظائف غير الزراعية (NFP)", "Unemployment Rate": "نسبة البطالة",
+    "Average Hourly Earnings m/m": "متوسط الأجور بالساعة", "CPI m/m": "التضخم الشهري CPI", "CPI y/y": "التضخم السنوي CPI",
+    "Core CPI m/m": "التضخم الأساسي CPI", "Core CPI y/y": "التضخم الأساسي السنوي CPI", "PPI m/m": "أسعار المنتجين PPI",
+    "Core PPI m/m": "أسعار المنتجين الأساسية PPI", "Core PCE Price Index m/m": "مؤشر PCE الأساسي",
+    "Core PCE Price Index y/y": "مؤشر PCE الأساسي السنوي", "Federal Funds Rate": "قرار الفائدة الأمريكية",
+    "FOMC Statement": "بيان الفيدرالي", "FOMC Press Conference": "مؤتمر الفيدرالي الصحفي",
+    "FOMC Meeting Minutes": "محضر اجتماع الفيدرالي", "FOMC Economic Projections": "توقعات الفيدرالي",
+    "Advance GDP q/q": "الناتج المحلي (أولي)", "Prelim GDP q/q": "الناتج المحلي (تمهيدي)",
+    "Final GDP q/q": "الناتج المحلي (نهائي)", "Retail Sales m/m": "مبيعات التجزئة",
+    "Core Retail Sales m/m": "مبيعات التجزئة الأساسية", "ISM Manufacturing PMI": "مؤشر ISM الصناعي",
+    "ISM Services PMI": "مؤشر ISM الخدمي", "Unemployment Claims": "طلبات إعانة البطالة",
+    "ADP Non-Farm Employment Change": "وظائف ADP", "JOLTS Job Openings": "الوظائف الشاغرة JOLTS",
+    "CB Consumer Confidence": "ثقة المستهلك", "Prelim UoM Consumer Sentiment": "معنويات المستهلك (ميشيغان)",
+    "Revised UoM Consumer Sentiment": "معنويات المستهلك (ميشيغان، معدّل)",
+    "Durable Goods Orders m/m": "طلبيات السلع المعمّرة", "Core Durable Goods Orders m/m": "طلبيات السلع المعمّرة الأساسية",
+    "Flash Manufacturing PMI": "مؤشر PMI الصناعي (أولي)", "Flash Services PMI": "مؤشر PMI الخدمي (أولي)",
+    "Crude Oil Inventories": "مخزون النفط الخام", "Philly Fed Manufacturing Index": "مؤشر فيلادلفيا الصناعي",
+    "Empire State Manufacturing Index": "مؤشر نيويورك الصناعي", "Building Permits": "تصاريح البناء",
+    "Housing Starts": "المنازل الجديدة قيد الإنشاء", "Existing Home Sales": "مبيعات المنازل القائمة",
+    "New Home Sales": "مبيعات المنازل الجديدة", "Pending Home Sales m/m": "مبيعات المنازل المعلّقة",
+    "Trade Balance": "الميزان التجاري", "Bank Holiday": "عطلة رسمية بأمريكا", "Industrial Production m/m": "الإنتاج الصناعي",
+    "Prelim UoM Inflation Expectations": "توقعات التضخم (ميشيغان)", "Employment Cost Index q/q": "مؤشر تكلفة التوظيف",
+}
+
+
+def cal_ar(title):
+    if title in CAL_AR:
+        return CAL_AR[title]
+    if title.endswith(" Speaks"):
+        return "🎤 خطاب " + title[:-7]
+    return title
+
+
+def am_of(sub):
+    """The morning settings of a subscriber, filled with the defaults the first time: on, his signal instruments (gold
+    when he has none), 1H, the strong USD news and the gold news."""
+    am = sub.setdefault("am", {})
+    am.setdefault("on", 1)
+    if not isinstance(am.get("syms"), list):
+        am["syms"] = [x for x in sub.get("syms", []) if x in INSTRUMENTS] or ["XAUUSD"]
+    if am.get("tf") not in AM_TFS:
+        am["tf"] = AM_TF_DEFAULT
+    if not isinstance(am.get("news"), list):
+        am["news"] = list(NEWS_DEFAULT)
+    return am
+
+
+def am_wants(sub):
+    """Who gets the morning: a subscriber with his signals on, or one who set the morning himself (and did not stop it)."""
+    am = sub.get("am") or {}
+    if not am.get("on", 1):
+        return False
+    return bool(sub.get("syms") and sub.get("tfs")) or bool(am.get("set"))
+
+
+def am_menu_text(sub):
+    am = am_of(sub)
+    en = sub.get("lang") == "en"
+    syms = ", ".join(INSTRUMENTS[x]["name"] if en else SYM_AR.get(x, x) for x in am["syms"] if x in INSTRUMENTS) or "—"
+    news = " · ".join(NEWS_KINDS[k][1 if en else 0] for k in am["news"] if k in NEWS_KINDS) or "—"
+    tf = am["tf"].upper() if en else AM_TF_AR[am["tf"]]
+    if en:
+        return (f"☀️ <b>Morning analysis & news</b>\n{LINE}\n"
+                f"Every weekday at {MORNING_HOUR}:00 (Beirut) you get one picture per instrument: the candles, the order "
+                f"blocks (OB), yesterday's high and low (PDH / PDL) and the break scenarios up and down with their targets. "
+                f"Plus the news you choose.\n\n"
+                f"{'✅ On' if am['on'] else '⏸ Off'}\n📈 Instruments  <b>{syms}</b>\n⏱ Timeframe  <b>{tf}</b>\n📰 News  <b>{news}</b>\n\n"
+                f"Tap to choose · 👁 sends it to you now.\n{SIGN}")
+    return (f"☀️ <b>تحليل الصبح والأخبار</b>\n{LINE}\n"
+            f"كل يوم من الإثنين للجمعة الساعة {MORNING_HOUR}:00 (بيروت) بتوصلك صورة لكل أداة: الشموع، مناطق الـ OB، "
+            f"قمة وقاع امبارح (PDH / PDL)، وسيناريو الكسر لفوق ولتحت مع الأهداف. ومعها الأخبار يلّي بتختارها.\n\n"
+            f"{'✅ شغّال' if am['on'] else '⏸ موقّف'}\n📈 الأدوات  <b>{syms}</b>\n⏱ الفريم  <b>{tf}</b>\n📰 الأخبار  <b>{news}</b>\n\n"
+            f"اضغط لتختار · 👁 بتبعتلك ياها هلّق.\n{SIGN}")
+
+
+def am_markup(sub):
+    am = am_of(sub)
+    en = sub.get("lang") == "en"
+    rows = [[{"text": ("✅ On" if en else "✅ شغّال") if am["on"] else ("⏸ Off" if en else "⏸ موقّف"), "callback_data": "am:on"},
+             {"text": "👁 " + ("Send it now" if en else "ابعتلي ياها هلّق"), "callback_data": "am:pv"}]]
+    syms = [x for x in AVAILABLE_SYMS if x in INSTRUMENTS]
+    for i in range(0, len(syms), 3):
+        rows.append([{"text": ("✅ " if x in am["syms"] else "▫️ ") + ICON.get(x, "") + " " +
+                      (INSTRUMENTS[x]["name"].split()[0] if en else SYM_AR.get(x, x)), "callback_data": "am:s:" + x}
+                     for x in syms[i:i + 3]])
+    rows.append([{"text": ("🔘 " if am["tf"] == t else "⚪ ") + (t.upper() if en else AM_TF_AR[t]), "callback_data": "am:tf:" + t}
+                 for t in AM_TFS])
+    keys = list(NEWS_KINDS)
+    for i in range(0, len(keys), 2):
+        rows.append([{"text": ("✅ " if k in am["news"] else "▫️ ") + NEWS_KINDS[k][1 if en else 0], "callback_data": "am:n:" + k}
+                     for k in keys[i:i + 2]])
+    rows.append([{"text": "⬅️ " + ("Back" if en else "رجوع"), "callback_data": "am:bk"}])
+    return {"inline_keyboard": rows}
+
+
+# ── the news (free): the ForexFactory calendar of the week and the Google News RSS search
+_CAL = {"t": 0.0, "rows": None}
+_NEWS = {}
+
+
+def cal_today(now, tz=None):
+    """Today's US events of the calendar (the week file, read at most once an hour): time (tz), title, impact,
+    forecast, previous. None when it could not be read."""
+    tz = tz or MSG_TZ
+    if requests is not None and now - _CAL["t"] > 3600:
+        try:
+            r = requests.get(CAL_URL, headers=UA, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            _CAL["rows"], _CAL["t"] = (data if isinstance(data, list) else []), now
+            log.info("NEWS CHECK: calendar OK (%d events this week)", len(_CAL["rows"]))
+        except Exception as e:
+            log.warning("NEWS CHECK: the calendar could not be read (%s)", type(e).__name__)
+            _CAL["t"] = now - 3000                         # try again in 10 minutes
+    if _CAL["rows"] is None:
+        return None
+    day = datetime.fromtimestamp(now, tz).date()
+    out = []
+    for e in _CAL["rows"]:
+        try:
+            if str(e.get("country", "")).upper() != "USD":
+                continue
+            loc = datetime.fromisoformat(str(e["date"]).replace("Z", "+00:00")).astimezone(tz)
+            if loc.date() != day:
+                continue
+            out.append({"t": loc.timestamp(), "hm": loc.strftime("%H:%M"), "title": str(e.get("title") or "").strip(),
+                        "impact": str(e.get("impact") or "").strip().title(), "forecast": str(e.get("forecast") or "").strip(),
+                        "previous": str(e.get("previous") or "").strip()})
+        except Exception:
+            continue
+    out.sort(key=lambda x: x["t"])
+    return out
+
+
+def rss_items(content):
+    """title / link / time / source of the items of an RSS 2.0 or Atom feed, newest first."""
+    root = ET.fromstring(content)
+    out = []
+    for it in root.iter():
+        if it.tag.split("}")[-1] not in ("item", "entry"):
+            continue
+        g = {}
+        for c in it:
+            g.setdefault(c.tag.split("}")[-1], c)
+        title = (g["title"].text or "").strip() if "title" in g else ""
+        link = ((g["link"].text or g["link"].get("href") or "").strip()) if "link" in g else ""
+        ts = None
+        for k in ("pubDate", "published", "updated"):
+            if k in g and (g[k].text or "").strip():
+                v = g[k].text.strip()
+                try:
+                    ts = parsedate_to_datetime(v).timestamp() if k == "pubDate" else \
+                        datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    ts = None
+                break
+        src = (g["source"].text or "").strip() if "source" in g else ""
+        if title:
+            out.append({"title": title, "link": link, "t": ts, "src": src})
+    out.sort(key=lambda x: -(x["t"] or 0))
+    return out
+
+
+def news_heads(kind, lang, now):
+    """The newest headlines of one kind of news in one language (the last day), read at most every 30 minutes.
+    None when they could not be read."""
+    q = (NEWS_KINDS.get(kind) or (None, None, None, None))[3 if lang == "en" else 2]
+    if not q or requests is None:
+        return None
+    key = f"{kind}|{lang}"
+    c = _NEWS.get(key)
+    if c and now - c[0] < 1800:
+        return c[1]
+    if lang == "en":
+        hl, gl, ceid = "en-US", "US", "US:en"
+    else:
+        ceid = NEWS_AR_EDITION if ":" in NEWS_AR_EDITION else "EG:ar"
+        gl, hl = ceid.split(":")[0], "ar"
+    try:
+        r = requests.get("https://news.google.com/rss/search", params={"q": q + " when:1d", "hl": hl, "gl": gl, "ceid": ceid},
+                         headers=UA, timeout=20)
+        r.raise_for_status()
+        items = [x for x in rss_items(r.content) if not x["t"] or now - x["t"] < 36 * 3600]
+        log.info("NEWS CHECK: %s (%s) OK, %d headlines", kind, lang, len(items))
+    except Exception as e:
+        log.warning("NEWS CHECK: %s (%s) could not be read (%s)", kind, lang, type(e).__name__)
+        _NEWS[key] = (now - 1200, c[1] if c else None)     # try again in 10 minutes
+        return c[1] if c else None
+    _NEWS[key] = (now, items)
+    return items
+
+
+def am_cal_txt(rows, kinds, en=False):
+    """Today's US calendar of the kinds chosen (strong, medium), Beirut time."""
+    want = ({"High"} if "cal3" in kinds else set()) | ({"Medium"} if "cal2" in kinds else set())
+    if not want:
+        return ""
+    head = "📅 <b>" + ("Today's US calendar" if en else "أجندة الدولار اليوم") + "</b> · " + ("Beirut time" if en else "بتوقيت بيروت")
+    if rows is None:
+        return head + "\n" + ("— the calendar could not be read now" if en else "— ما قدرت اقرا الأجندة هلّق")
+    sel = [r for r in rows if r["impact"] in want or (r["impact"] == "Holiday" and "cal3" in kinds)]
+    if not sel:
+        return head + "\n" + ("No US news of this kind today ✅" if en else "ما في أخبار من هالنوع اليوم ✅")
+    out = []
+    for r in sel[:12]:
+        icon = {"High": "🔴", "Medium": "🟠", "Holiday": "⚪"}.get(r["impact"], "🟡")
+        name = r["title"] if en else cal_ar(r["title"])
+        fp = []
+        if r["forecast"]:
+            fp.append(("exp. " if en else "المتوقع ") + r["forecast"])
+        if r["previous"]:
+            fp.append(("prev. " if en else "السابق ") + r["previous"])
+        out.append(f"{icon} <code>{r['hm']}</code> {html.escape(name)}" + (f" · <i>{html.escape(' · '.join(fp))}</i>" if fp else ""))
+    return head + "\n" + "\n".join(out)
+
+
+def am_news_txt(kinds, heads, en=False):
+    """The headlines of the kinds chosen (heads: kind -> items or None), each one a link to the article."""
+    parts, seen = [], set()
+    for k in kinds:
+        if k not in NEWS_KINDS or not NEWS_KINDS[k][2]:
+            continue
+        name = NEWS_KINDS[k][1 if en else 0]
+        items = heads.get(k)
+        if items is None:                                   # could not be read: left out (the log says why)
+            continue
+        rows = []
+        for x in items:
+            t = x["title"]
+            if x["src"] and t.endswith(" - " + x["src"]):
+                t = t[:-len(x["src"]) - 3].strip()
+            if t.lower() in seen:
+                continue
+            seen.add(t.lower())
+            a = (f'<a href="{html.escape(x["link"], quote=True)}">{html.escape(t)}</a>' if x["link"].startswith("http")
+                 else html.escape(t))
+            rows.append(f"• {a}" + (f" <i>({html.escape(x['src'])})</i>" if x["src"] else ""))
+            if len(rows) >= AM_NEWS_MAX:
+                break
+        parts.append(f"<b>{name}</b>\n" + ("\n".join(rows) if rows else
+                                            ("— nothing new since yesterday" if en else "— ما في جديد من امبارح")))
+    return "\n\n".join(parts)
+
+
+# ── the levels of the picture: the same swings, Fibonacci and order blocks as the bot's orders
+def am_pp(sym, tf):
+    """Swing size and Fibonacci of the chart (its tested setting; 4H and the charts without one use the 1H setting)."""
+    pp = v20_params(sym, tf) or v20_params(sym, "1h") or {}
+    return (int(pp.get("L", 8)), int(pp.get("R", 1)), float(pp.get("sfib", 0.786)), float(pp.get("slb", 0.25)),
+            [float(x) for x in (pp.get("tps") or [0.618, 1.0, 1.618])])
+
+
+def am_side(bars, d, L, R, sfib, slb, tps, atr, price):
+    """The break scenario of side d: the nearest swing high (buy) / low (sell) beyond the price that no close went
+    through yet, the move to it (from the lowest low / highest high since the swing before it, like the orders of the
+    bot), the stop and the targets on the Fibonacci of that move. method = it is the bot's own level (the last swing)."""
+    n = len(bars)
+    hs, ls, cs = [b.h for b in bars], [b.l for b in bars], [b.c for b in bars]
+    first = True
+    for j in range(n - 1 - R, L - 1, -1):
+        if not (v20_swh(hs, j, L, R) if d == 1 else v20_swl(ls, j, L, R)):
+            continue
+        lvl = hs[j] if d == 1 else ls[j]
+        was_first, first = first, False
+        if (lvl - price) * d <= 0 or any((cs[q] - lvl) * d > 0 for q in range(j + 1, n)):
+            continue
+        j0 = next((q for q in range(j - 1, L - 1, -1) if (v20_swl(ls, q, L, R) if d == 1 else v20_swh(hs, q, L, R))), -1)
+        if j0 < 0:
+            return None
+        kb = j0
+        for q in range(j0, n):
+            if (ls[q] < ls[kb]) if d == 1 else (hs[q] > hs[kb]):
+                kb = q
+        lo, hi = (ls[kb], lvl) if d == 1 else (lvl, hs[kb])
+        leg = hi - lo
+        if leg <= 0:
+            return None
+        return dict(dir=d, E=lvl, S=lvl - d * (sfib * leg + slb * (atr or 0)), tps=[lvl + d * x * leg for x in tps],
+                    j=j, kb=kb, lo=lo, hi=hi, method=was_first)
+    return None
+
+
+def am_obs(bars, L, R, keep=2):
+    """The order blocks of the last breaks of structure, like the indicator: a close through the last swing high (low)
+    not broken yet; the order block is the last down (up) candle at the start of the move that broke it (up to 5
+    candles before its lowest low / highest high). A zone a later close went through is dropped. Last `keep` per side."""
+    n = len(bars)
+    hs, ls = [b.h for b in bars], [b.l for b in bars]
+    sh = sl = None                                      # [price, index, broken]
+    zones = []
+    for i in range(n):
+        if i >= L + R:
+            j = i - R
+            if v20_swh(hs, j, L, R):
+                sh = [hs[j], j, False]
+            if v20_swl(ls, j, L, R):
+                sl = [ls[j], j, False]
+        for d, sw in ((1, sh), (-1, sl)):
+            if sw is None or sw[2] or (bars[i].c - sw[0]) * d <= 0:
+                continue
+            sw[2] = True
+            seg = range(sw[1], i + 1)
+            kb = min(seg, key=lambda q: (ls[q], q)) if d == 1 else min(seg, key=lambda q: (-hs[q], q))
+            ob = kb
+            for q in range(kb, max(kb - 5, 0) - 1, -1):
+                if (bars[q].c < bars[q].o) if d == 1 else (bars[q].c > bars[q].o):
+                    ob = q
+                    break
+            if not any(z["dir"] == d and z["i"] == ob for z in zones):      # two breaks from the same block: once
+                zones.append(dict(dir=d, i=ob, hi=hs[ob], lo=ls[ob], t=bars[ob].t, brk=i))
+    live = [z for z in zones if not any((bars[q].c < z["lo"]) if z["dir"] == 1 else (bars[q].c > z["hi"])
+                                        for q in range(z["brk"] + 1, n))]
+    out = []
+    for d in (1, -1):
+        out += [z for z in live if z["dir"] == d][-keep:]
+    return out
+
+
+def am_prev_day(bars):
+    """Yesterday's high and low: the trading day ends at 17:00 New York (like the daily candle of the indicator)."""
+    days = {}
+    for b in bars or []:
+        k = (datetime.fromtimestamp(b.t, TZ) + timedelta(hours=7)).date()
+        h, l = days.get(k, (b.h, b.l))
+        days[k] = (max(h, b.h), min(l, b.l))
+    ks = sorted(days)
+    return days[ks[-2]] if len(ks) >= 2 else (None, None)
+
+
+def am_levels(sym, tf, bars, h1=None, price=None, info=None):
+    """Everything the picture and its caption show for one instrument and timeframe."""
+    L, R, sfib, slb, tps = am_pp(sym, tf)
+    atr = calc_atr(bars) or 0.0
+    price = bars[-1].c if price is None else price
+    lv = {"sym": sym, "tf": tf, "price": price, "atr": atr}
+    lv["buy"] = am_side(bars, 1, L, R, sfib, slb, tps, atr, price)
+    lv["sell"] = am_side(bars, -1, L, R, sfib, slb, tps, atr, price)
+    lv["obs"] = am_obs(bars, L, R)
+    lv["pdh"], lv["pdl"] = am_prev_day(h1 or bars)
+    lv["arrows"] = (info or {}).get("arrows", "")
+    return lv
+
+
+def am_caption(sym, tf, lv, en=False):
+    """The caption of the picture: the price now and the trend, the two scenarios with the stop and targets, PDH /
+    PDL and the order blocks (in one language)."""
+    f = lambda x: fmt(sym, x)
+    out = [f"{ICON.get(sym, '•')} <b>{INSTRUMENTS[sym]['name'] if en else SYM_AR.get(sym, sym)}</b> · "
+           f"{tf.upper() if en else AM_TF_AR.get(tf, tf)}",
+           ("💰 Now " if en else "💰 هلّق ") + f"<code>{f(lv['price'])}</code>" + (f" · {lv['arrows']}" if lv.get("arrows") else "")]
+    for side in (lv.get("buy"), lv.get("sell")):
+        if not side:
+            continue
+        up = side["dir"] == 1
+        tps = " / ".join(f(x) for x in side["tps"])
+        if en:
+            out.append(f"{'🟢 Break above' if up else '🔴 Break below'} <code>{f(side['E'])}</code> → {tps} · SL {f(side['S'])}")
+        else:
+            out.append(f"{'🟢 إذا كسر فوق' if up else '🔴 إذا كسر تحت'} <code>{f(side['E'])}</code> ← {tps} · ستوب {f(side['S'])}")
+    if lv.get("pdh") is not None:
+        out.append(f"📏 PDH <code>{f(lv['pdh'])}</code> · PDL <code>{f(lv['pdl'])}</code>" + ("" if en else " · قمة وقاع امبارح"))
+    for d, tag_en, tag_ar, icon in ((1, "OB buy", "OB شراء", "🟩"), (-1, "OB sell", "OB بيع", "🟥")):
+        zs = [z for z in lv.get("obs", []) if z["dir"] == d]
+        if zs:
+            out.append(f"{icon} {tag_en if en else tag_ar} " + " · ".join(f"{f(z['lo'])}–{f(z['hi'])}" for z in zs))
+    out.append("ℹ️ <i>" + ("Scenarios, not orders: the bot sends an order when the rules of the method allow it."
+                           if en else "سيناريوهات مش أوامر: البوت بيبعت الأمر لما تسمح قواعد الطريقة.") + "</i>")
+    out.append(SIGN)
+    return "\n".join(out)
+
+
+# ── the picture
+AM_COL = {"bg": "#0b0e14", "ax": "#0e1219", "grid": "#1a2130", "txt": "#ece6d6", "mute": "#8b91a1", "gold": "#d4af37",
+          "up": "#26a69a", "dn": "#ef5350", "buy": "#2bd67b", "sell": "#ff5a5f", "fire": "#ff7a1a"}
+
+
+def _ar(s):
+    """Arabic as matplotlib must get it: as written when it shapes the text itself (matplotlib 3.11 and later, with
+    libraqm), joined and turned by the two small libraries otherwise; None when neither is there."""
+    try:
+        import matplotlib.ft2font as _ft2
+        if getattr(_ft2, "__libraqm_version__", None):
+            return s
+    except Exception:
+        pass
+    if arabic_reshaper is None:
+        return None
+    try:
+        return _bidi_display(arabic_reshaper.reshape(s))
+    except Exception:
+        return None
+
+
+def _spread(items, gap, top):
+    """Move the labels [y, order, text, color] apart so that no two are closer than gap, in the order of their prices,
+    and none above top."""
+    items = sorted(items, key=lambda x: (x[0], x[1]))
+    for k in range(1, len(items)):
+        items[k][0] = max(items[k][0], items[k - 1][0] + gap)
+    if items and items[-1][0] > top:
+        items[-1][0] = top
+        for k in range(len(items) - 2, -1, -1):
+            items[k][0] = min(items[k][0], items[k + 1][0] - gap)
+    return items
+
+
+def am_draw(sym, tf, bars, lv, now):
+    """The morning picture of one instrument (PNG bytes, 1280 x 720), None without matplotlib."""
+    if plt is None or len(bars) < 30:
+        return None
+    import io
+    C = AM_COL
+    show = bars[-AM_BARS:]
+    n, off = len(show), len(bars) - len(show)
+    xr = n + max(24, n // 4)                               # room on the right for the scenarios and the labels
+    fig = plt.figure(figsize=(12.8, 7.2), dpi=100, facecolor=C["bg"])
+    ax = fig.add_axes([0.012, 0.085, 0.905, 0.79], facecolor=C["ax"])
+    lo, hi = min(b.l for b in show), max(b.h for b in show)
+    span = max(hi - lo, 1e-9)
+    # the levels and the zones that fit (the others are written at the edge)
+    lines = []                                             # (y, label, color, style, x0)
+    for side in (lv.get("buy"), lv.get("sell")):
+        if not side:
+            continue
+        col = C["buy"] if side["dir"] == 1 else C["sell"]
+        x0 = max(side["j"] - off, 0)
+        lines.append((side["E"], ("BUY STOP " if side["dir"] == 1 else "SELL STOP ") + fmt(sym, side["E"]), col, "-", x0))
+        for k, tp in enumerate(side["tps"]):
+            lines.append((tp, f"TP{k + 1} " + fmt(sym, tp), col, ":", n - 1))
+    if lv.get("pdh") is not None:
+        lines.append((lv["pdh"], "PDH " + fmt(sym, lv["pdh"]), C["gold"], "--", 0))
+        lines.append((lv["pdl"], "PDL " + fmt(sym, lv["pdl"]), C["gold"], "--", 0))
+    ys = [lo, hi] + [y for y, *_ in lines if lo - 0.55 * span <= y <= hi + 0.55 * span]
+    ys += [z["hi"] for z in lv.get("obs", []) if lo - 0.55 * span <= z["hi"] <= hi + 0.55 * span]
+    ys += [z["lo"] for z in lv.get("obs", []) if lo - 0.55 * span <= z["lo"] <= hi + 0.55 * span]
+    y0, y1 = min(ys), max(ys)
+    pad = (y1 - y0) * 0.05
+    y0, y1 = y0 - pad, y1 + pad
+    ax.set_xlim(-1, xr)
+    ax.set_ylim(y0, y1)
+    # grid, axes
+    for s in ax.spines.values():
+        s.set_color(C["grid"])
+    ax.grid(True, color=C["grid"], linewidth=0.6, alpha=0.7)
+    ax.tick_params(colors=C["mute"], labelsize=9, length=0)
+    ax.yaxis.tick_right()
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: fmt(sym, v)))
+    step = max(1, n // 8)
+    ticks = list(range(step // 2, n, step))
+    fmt_t = "%d %b" if tf == "4h" else "%a %H:%M"
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([datetime.fromtimestamp(show[i].t, MSG_TZ).strftime(fmt_t) for i in ticks])
+    # the faint name in the middle
+    ax.text((xr - 1) / 2, (y0 + y1) / 2, "PHOENIX HAZ", color=C["gold"], alpha=0.05, fontsize=72, fontweight="bold",
+            ha="center", va="center", zorder=0)
+    # the order blocks
+    for z in lv.get("obs", []):
+        col = C["buy"] if z["dir"] == 1 else C["sell"]
+        x0 = max(z["i"] - off, 0) - 0.4
+        ax.add_patch(Rectangle((x0, z["lo"]), n - 0.6 - x0, z["hi"] - z["lo"], facecolor=col, alpha=0.13,
+                               edgecolor=col, linewidth=0.8, zorder=1))
+        ax.text(n - 1.2, (z["lo"] + z["hi"]) / 2, "OB BUY" if z["dir"] == 1 else "OB SELL", color=col, alpha=0.9,
+                fontsize=8, ha="right", va="center", zorder=2)
+    # the candles
+    cols = [C["up"] if b.c >= b.o else C["dn"] for b in show]
+    ax.vlines(range(n), [b.l for b in show], [b.h for b in show], colors=cols, linewidth=1.0, zorder=3)
+    tick = INSTRUMENTS[sym]["tick"]
+    ax.bar(range(n), [max(abs(b.c - b.o), tick) for b in show], bottom=[min(b.o, b.c) for b in show], width=0.64,
+           color=cols, edgecolor=cols, linewidth=0.5, zorder=4)
+    # the levels: lines and labels on the right (the labels moved apart so they never cover each other)
+    labels = []                                             # [y shown, the price (keeps the order), text, color]
+    ym = (y1 - y0) * 0.025
+    for y, txt, col, ls_, x0 in lines:
+        if not (y0 <= y <= y1):                             # beyond the picture: written at its edge with an arrow
+            labels.append([y1 - ym if y > y1 else y0 + ym, y, txt + (" ↑" if y > y1 else " ↓"), col])
+            continue
+        ax.hlines(y, x0, xr, colors=col, linestyles=ls_, linewidth=1.5 if ls_ == "-" else 1.0, alpha=0.95 if ls_ == "-" else 0.75, zorder=5)
+        labels.append([y, y, txt, col])
+    price = lv["price"]
+    ax.hlines(price, 0, xr, colors="#ffffff", linestyles=(0, (2, 3)), linewidth=0.8, alpha=0.6, zorder=5)
+    labels.append([price, price, "NOW " + fmt(sym, price), "#ffffff"])
+    for y, _, txt, col in _spread(labels, (y1 - y0) * 0.036, y1 - ym):
+        ax.text(xr - 0.3, y, txt, color=col, fontsize=9, fontweight="bold", ha="right", va="center", zorder=7,
+                bbox=dict(boxstyle="round,pad=0.25", facecolor=C["bg"], edgecolor=col, linewidth=0.8, alpha=0.92))
+    # the two scenarios: from the price to the break, then on to target 2
+    for side in (lv.get("buy"), lv.get("sell")):
+        if not side:
+            continue
+        col = C["buy"] if side["dir"] == 1 else C["sell"]
+        tgt = side["tps"][min(1, len(side["tps"]) - 1)]
+        tgt = min(max(tgt, y0), y1)
+        xa, xb, xc = n + 0.5, n + 3.5, n + 9.5
+        ax.plot([xa, xb], [price, side["E"]], color=col, linewidth=1.2, linestyle=(0, (3, 2)), alpha=0.9, zorder=6)
+        ax.add_patch(FancyArrowPatch((xb, side["E"]), (xc, tgt), arrowstyle="-|>", mutation_scale=16, color=col,
+                                     linewidth=2.0, zorder=6))
+    # titles
+    name = INSTRUMENTS[sym]["name"].upper()
+    fig.text(0.012, 0.955, f"{name}  ·  {sym}  ·  {tf.upper()}", color=C["txt"], fontsize=17, fontweight="bold", ha="left", va="center")
+    ar = _ar(f"{SYM_AR.get(sym, sym)} · {AM_TF_AR.get(tf, tf)} · تحليل الصبح")
+    if ar:
+        fig.text(0.917, 0.955, ar, color=C["gold"], fontsize=15, fontweight="bold", ha="right", va="center")
+    loc = datetime.fromtimestamp(now, MSG_TZ)
+    fig.text(0.012, 0.905, loc.strftime("%a %d %b %Y · %H:%M") + " Beirut   ·   trend " + (lv.get("arrows") or "—"),
+             color=C["mute"], fontsize=10, ha="left", va="center")
+    fig.text(0.917, 0.905, "green: break above → targets   ·   red: break below → targets", color=C["mute"], fontsize=9,
+             ha="right", va="center")
+    fig.text(0.012, 0.028, "THE PHOENIX HAZ SYNDICATE", color=C["fire"], fontsize=11, fontweight="bold", ha="left", va="center")
+    fig.text(0.917, 0.028, "scenarios, not orders  ·  education only, not financial advice", color=C["mute"], fontsize=8.5,
+             ha="right", va="center")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return buf.getvalue()
+
+
 class Telegram:
     def __init__(self, token, channel, dry=False):
         self.token, self.channel, self.dry = token, channel, dry
@@ -1778,7 +2417,7 @@ class Telegram:
         c = str(chat)
         return c.startswith("@") or c.startswith("-")
 
-    def _call(self, method, payload, chat=None):
+    def _call(self, method, payload, chat=None, files=None):
         now = time.time()
         wait = self.last_any + 0.04 - now
         if chat is not None:
@@ -1796,7 +2435,11 @@ class Telegram:
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         for _ in range(4):
             try:
-                r = requests.post(url, json=payload, timeout=25)
+                if files:                               # v29.6: a picture is uploaded as a form
+                    data = {k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in payload.items()}
+                    r = requests.post(url, data=data, files=files, timeout=60)
+                else:
+                    r = requests.post(url, json=payload, timeout=25)
             except requests.RequestException as e:      # never print the URL: it contains the bot token
                 log.error("Telegram %s network error (%s)", method, type(e).__name__)
                 time.sleep(3); continue
@@ -1863,6 +2506,32 @@ class Telegram:
             p["reply_markup"] = markup
         res = self._call("sendMessage", p, chat)
         return res["message_id"] if res else None
+
+    def send_photo(self, photo, caption="", chat=None, name="phoenix.png"):
+        """v29.6: a picture (PNG bytes, or the file id of one sent before) with its caption (HTML, one language per
+        reader). Returns (message id, file id)."""
+        chat = chat if chat is not None else self.channel
+        caption = self._lang(chat, caption)
+        while len(caption) > 1000 and "\n" in caption:        # Telegram: 1024 characters at most
+            caption = caption.rsplit("\n", 1)[0]
+        if self.dry:
+            self.fake_id += 1
+            if isinstance(photo, (bytes, bytearray)):
+                folder = os.path.join(HERE, "morning_preview")
+                os.makedirs(folder, exist_ok=True)
+                with open(os.path.join(folder, f"{self.fake_id}_{name}"), "wb") as fh:
+                    fh.write(photo)
+            print(f"\n[DRY-RUN] photo #{self.fake_id} ({name}) to {chat}\n{caption}\n")
+            return self.fake_id, None
+        p = {"chat_id": chat, "caption": caption, "parse_mode": "HTML"}
+        if isinstance(photo, (bytes, bytearray)):
+            res = self._call("sendPhoto", p, chat, files={"photo": (name, bytes(photo), "image/png")})
+        else:
+            p["photo"] = photo
+            res = self._call("sendPhoto", p, chat)
+        if not res:
+            return None, None
+        return res.get("message_id"), ((res.get("photo") or [{}])[-1]).get("file_id")
 
     def edit(self, chat, msg_id, text, markup=None):
         text = self._lang(chat, text)
@@ -2114,6 +2783,7 @@ class Engine:
         self.snap_fn = None                      # set by run(): returns current prices for a list of symbols
         self.stats = {"built": 0, "rr_skip": 0, "dist_skip": 0, "unreal": 0, "capped": 0, "cool": 0, "spike": 0, "why": {}}
         self.seen, self.seen_hist, self.poll_id, self.dirty = {}, {}, 0, False   # live reads of the forming minute
+        self.cache, self.bg = {}, []             # v29.6: the higher-timeframe candles (set by run()), background sends
         self.load()
         self.meta.setdefault("feed", provider())
         if tg is not None:
@@ -2934,6 +3604,14 @@ class Engine:
             a = arg.strip().lower()
             sub["lang"] = "en" if a.startswith("en") else "ar" if a.startswith("ar") else ("ar" if sub.get("lang") == "en" else "en")
             self.tg.send(msg_lang(sub), chat=cid)
+        elif cmd == "/morning":
+            a = arg.strip().lower()
+            if a in ("on", "off"):
+                am = am_of(sub)
+                am["on"], am["set"] = (1 if a == "on" else 0), 1
+                self.tg.send(am_menu_text(sub), chat=cid, markup=am_markup(sub))
+            else:
+                self.am_preview(cid, sub)
         elif cmd == "/stop":
             sub["syms"], sub["tfs"] = [], []
             self.tg.send("Signals stopped. Send /start any time to choose again.\nتم إيقاف الإشارات. أرسل /start لتختار من جديد.", chat=cid)
@@ -2961,6 +3639,27 @@ class Engine:
         elif data == "lang":
             sub["lang"] = "ar" if sub.get("lang") == "en" else "en"
             self.tg.send(msg_lang(sub), chat=cid)
+        elif data == "am" or data.startswith("am:"):            # v29.6: the morning menu
+            am = am_of(sub)
+            if data == "am:pv":
+                return self.am_preview(cid, sub, cq["id"])
+            if data == "am:bk":
+                self.tg.answer(cq["id"])
+                self.tg.edit(cid, mid, msg_menu(sub), markup=menu_markup(sub, self.is_owner(cid)))
+                return
+            if data == "am:on":
+                am["on"] = 0 if am["on"] else 1
+            elif data.startswith("am:s:") and data[5:] in INSTRUMENTS:
+                (am["syms"].remove if data[5:] in am["syms"] else am["syms"].append)(data[5:])
+            elif data.startswith("am:tf:") and data[6:] in AM_TFS:
+                am["tf"] = data[6:]
+            elif data.startswith("am:n:") and data[5:] in NEWS_KINDS:
+                (am["news"].remove if data[5:] in am["news"] else am["news"].append)(data[5:])
+            if data != "am":
+                am["set"] = 1
+            self.tg.answer(cq["id"])
+            self.tg.edit(cid, mid, am_menu_text(sub), markup=am_markup(sub))
+            return
         elif data in ("cal", "cx") or data.startswith("c:"):
             self.tg.answer(cq["id"])
             if not self.is_owner(cid):
@@ -3010,11 +3709,11 @@ class Engine:
         key = loc.strftime("%Y-%m-%d")
         if loc.weekday() < 5 and MORNING_HOUR * 60 <= m < MORNING_HOUR * 60 + 180 and self.meta.get("morning") != key:
             self.meta["morning"] = key
-            syms = sorted({x for s in self.subs.values() for x in s["syms"]} | (set(AVAILABLE_SYMS) if self.tg.channel else set()))
-            snap = self.snap_fn(syms) if (self.snap_fn and syms) else {}
-            i = loc.toordinal()
-            self._broadcast_daily(lambda sub: msg_morning(sub, snap, loc, i))
             self.save()
+            try:                                       # v29.6: the morning message, the pictures and the news
+                log.info("morning: %d chats", self.morning(now))
+            except Exception as e:
+                log.warning("morning failed: %s", e)
         ny = datetime.fromtimestamp(now, TZ)
         m = ny.hour * 60 + ny.minute
         key = ny.strftime("%Y-%m-%d")
@@ -3026,6 +3725,113 @@ class Engine:
             self._broadcast_daily(lambda sub: msg_close(sub, stats_text(sub, self.ledger, ref),
                                                         n_sig, weekly, i, today_line(sub, self.ledger, ref)))
             self.save()
+
+    # ── v29.6: the morning picture and the news
+    def am_picture(self, sym, tf, now, snap):
+        """The picture (PNG, None without matplotlib) and the levels of one instrument and timeframe, from the
+        higher-timeframe candles the trend reads anyway (read again when older than 10 minutes)."""
+        try:
+            info = bias_info_for(sym, now, self.cache)
+            htf = info.get("htf") or {}
+            bars = htf.get(tf) or get_candles(sym, tf, now)
+            if len(bars) < 60:
+                return None
+            h1 = htf.get("1h") or bars
+            price = (snap.get(sym) or {}).get("price") or bars[-1].c
+            lv = am_levels(sym, tf, bars, h1, price, info)
+            return {"png": am_draw(sym, tf, bars, lv, now) if AM_ON else None, "lv": lv}
+        except Exception as e:
+            log.warning("morning picture %s %s: %s", sym, tf, e)
+            return None
+
+    def morning(self, now, only=None):
+        """The morning of every subscriber who wants it and of the channel, or of one chat (only). The data, the
+        pictures (one per instrument and timeframe for everyone) and the news are made here; the messages go out in
+        the background. Returns the number of chats."""
+        loc = datetime.fromtimestamp(now, MSG_TZ)
+        recips = []                                        # (chat, subscriber, his morning settings)
+        if only is None:
+            if self.tg is not None and self.tg.channel and CHANNEL_FEED:
+                am = {"on": 1, "syms": [x for x in AM_CHANNEL_SYMS if x in INSTRUMENTS], "tf": AM_TF_DEFAULT,
+                      "news": [k for k in AM_CHANNEL_NEWS if k in NEWS_KINDS]}
+                chan = {"syms": list(AVAILABLE_SYMS), "tfs": list(AVAILABLE_TFS), "lot": LOT_DEFAULT, "name": "", "am": am}
+                recips.append((self.tg.channel, chan, am))
+            for cid, sub in list(self.subs.items()):
+                if am_wants(sub):
+                    recips.append((cid, sub, am_of(sub)))
+        else:
+            sub = self.sub_of(only)
+            recips.append((only, sub, am_of(sub)))
+        if not recips or self.tg is None:
+            return 0
+        syms = sorted({x for _, s, a in recips for x in list(s.get("syms") or []) + a["syms"] if x in INSTRUMENTS})
+        snap = self.snap_fn(syms) if (self.snap_fn and syms) else {}
+        pics = {}
+        for key in sorted({(x, a["tf"]) for _, _s, a in recips for x in a["syms"] if x in INSTRUMENTS}):
+            pics[key] = self.am_picture(key[0], key[1], now, snap)
+        kinds = {k for _, _s, a in recips for k in a["news"]}
+        cal = cal_today(now) if kinds & {"cal3", "cal2"} else []
+        heads, jobs = {}, []
+        for cid, sub, a in recips:
+            lang = "en" if sub.get("lang") == "en" else "ar"
+            for k in a["news"]:
+                if k in NEWS_KINDS and NEWS_KINDS[k][2] and (k, lang) not in heads:
+                    heads[(k, lang)] = news_heads(k, lang, now)
+            extra = "\n\n".join(x for x in (am_cal_txt(cal, a["news"], lang == "en"),
+                                            am_news_txt(a["news"], {k: heads.get((k, lang)) for k in a["news"]},
+                                                        lang == "en")) if x)
+            photos = [(x, a["tf"], pics[(x, a["tf"])]) for x in a["syms"] if pics.get((x, a["tf"]))]
+            jobs.append((cid, msg_morning(sub, snap, loc, loc.toordinal(), extra), photos, lang))
+        self._bg(self._morning_send, jobs)
+        return len(jobs)
+
+    def _morning_send(self, jobs):
+        fids = {}                                          # a picture is uploaded once, then sent again by its file id
+        for cid, text, photos, lang in jobs:
+            try:
+                self.tg.send(text, chat=cid)
+                for sym, tf, pic in photos:
+                    cap = am_caption(sym, tf, pic["lv"], lang == "en")
+                    if not pic.get("png"):
+                        self.tg.send(cap, chat=cid)
+                        continue
+                    _, fid = self.tg.send_photo(fids.get((sym, tf)) or pic["png"], cap, chat=cid, name=f"{sym}_{tf}.png")
+                    if fid and (sym, tf) not in fids:
+                        fids[(sym, tf)] = fid
+            except Exception as e:
+                log.warning("morning to %s: %s", cid, e)
+
+    def am_preview(self, cid, sub, cb_id=None):
+        """👁 / /morning: this subscriber's morning now (once every AM_PREVIEW_SEC seconds)."""
+        now = time.time()
+        en = sub.get("lang") == "en"
+        wait = int(sub.get("am_last", 0) + AM_PREVIEW_SEC - now)
+        if wait > 0:
+            txt = f"⏳ Again in {wait}s" if en else f"⏳ بعد {wait} ثانية"
+            if cb_id:
+                self.tg.answer(cb_id, txt)
+            else:
+                self.tg.send(txt, chat=cid)
+            return
+        sub["am_last"] = now
+        if cb_id:
+            self.tg.answer(cb_id)
+        self.tg.send("☀️ " + ("Preparing your morning picture…" if en else "عم حضّرلك صورة الصبح…"), chat=cid)
+        try:
+            self.morning(int(now), only=cid)
+        except Exception as e:
+            log.warning("morning preview %s: %s", cid, e)
+
+    def _bg(self, fn, *args):
+        """Run fn in the background (the morning messages), so the trades are followed meanwhile."""
+        self.bg = [t for t in self.bg if t.is_alive()]
+        t = threading.Thread(target=fn, args=args, daemon=True)
+        t.start()
+        self.bg.append(t)
+
+    def join_bg(self, timeout=900):
+        for t in list(self.bg):
+            t.join(timeout)
 
 # ───────────────────────────── live loop ─────────────────────────────
 HTF_SEC = {"1d": 86400, "4h": 14400, "1h": 3600, "15m": 900}
@@ -3119,8 +3925,9 @@ def watch_pairs(eng, symbols, tfs):
         pairs |= {(x, t) for x in sub["syms"] for t in sub["tfs"] if x in symbols and t in tfs}
     return sorted(pairs)
 
-def run(symbols, tfs, tg, once=False, minutes=0):
+def run(symbols, tfs, tg, once=False, minutes=0, morning=False):
     eng, cache, nxt = Engine(tg), {}, {}
+    eng.cache = cache                                       # v29.6: the morning pictures read the same candles
     log.info("Phoenix HAZ bot running: %s | %s | provider=%s", ",".join(symbols), ",".join(tfs), provider())
     eng.snap_fn = lambda syms: snapshot(syms, int(time.time()), cache)
     if not tg.dry:
@@ -3128,6 +3935,11 @@ def run(symbols, tfs, tg, once=False, minutes=0):
     if not tg.dry and not tg.check() and tg.channel:
         log.warning("Channel disabled for this run: signals go to private subscribers only (fix TELEGRAM_CHAT_ID or remove it)")
         tg.channel = ""
+    if morning:                                             # v29.6: --morning sends the morning now and stops
+        log.info("morning sent now to %d chats", eng.morning(int(time.time())))
+        eng.join_bg()
+        eng.save()
+        return
     end = time.time() + minutes * 60 if minutes else None
     m1c, nxt_m1 = {}, {}                                    # 1-minute candles read this round, next minute per symbol
     nxt_live, last_poll = {}, 0.0
@@ -3227,6 +4039,7 @@ def run(symbols, tfs, tg, once=False, minutes=0):
                 log.warning("%s: %s", key, e)
                 nxt[key] = now + 30
         if once or (end and time.time() >= end):
+            eng.join_bg()                                   # the morning messages still going out
             eng.save()
             log.info("Run finished, state saved")
             return
@@ -3269,6 +4082,75 @@ def selftest():
     print("ledger entries:", len(eng.ledger))
     first = next(t for k, t in fb.log if k == "new")
     print("\n--- sample signal ---\n" + strip_tags(first))
+    if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
+    selftest_morning()
+
+
+def selftest_morning():
+    """v29.6: the levels, zones, caption and picture of the morning, the news readers and the morning menu."""
+    rnd = random.Random(5)
+    t0 = int(datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc).timestamp())
+    price, bars = 4000.0, []
+    for i in range(600):
+        drift = 1.6 if (i // 45) % 2 == 0 else -1.4
+        o = price; c = o + drift + rnd.gauss(0, 3)
+        bars.append(Bar(t0 + i * 3600, o, max(o, c) + abs(rnd.gauss(0, 2)), min(o, c) - abs(rnd.gauss(0, 2)), c)); price = c
+    lv = am_levels("XAUUSD", "1h", bars, bars, bars[-1].c, {"arrows": "D▲ 4H▲ 1H▼ 15•"})
+    for side in (lv["buy"], lv["sell"]):
+        if side:
+            d = side["dir"]
+            assert (side["E"] - lv["price"]) * d > 0, "a break level is beyond the price"
+            assert all((tp - side["E"]) * d > 0 for tp in side["tps"]) and (side["E"] - side["S"]) * d > 0
+    assert lv["pdh"] is not None and lv["pdh"] >= lv["pdl"]
+    assert len(am_caption("XAUUSD", "1h", lv)) < 1000 and len(am_caption("XAUUSD", "1h", lv, True)) < 1000
+    png = am_draw("XAUUSD", "1h", bars, lv, bars[-1].t + 3600)
+    assert png is None or png[:8] == b"\x89PNG\r\n\x1a\n"
+    print("morning picture:", "no matplotlib (levels as text)" if png is None else f"{len(png) // 1024} KB",
+          "| buy above", lv["buy"] and fmt("XAUUSD", lv["buy"]["E"]), "| sell below", lv["sell"] and fmt("XAUUSD", lv["sell"]["E"]),
+          "| OB zones", len(lv["obs"]))
+    rss = (b'<?xml version="1.0"?><rss><channel><item><title>Gold steadies - Reuters</title><link>https://example.com/a</link>'
+           b'<pubDate>Fri, 20 Nov 2026 05:00:00 GMT</pubDate><source url="https://reuters.com">Reuters</source></item>'
+           b'</channel></rss>')
+    it = rss_items(rss)
+    assert it and it[0]["src"] == "Reuters" and it[0]["t"]
+    txt = am_news_txt(["gold"], {"gold": it})
+    assert "Gold steadies" in txt and "- Reuters" not in txt
+    _CAL["rows"], _CAL["t"] = [{"title": "Unemployment Claims", "country": "USD", "date": "2026-11-20T08:30:00-05:00",
+                                "impact": "High", "forecast": "220K", "previous": "218K"},
+                               {"title": "Flash Manufacturing PMI", "country": "EUR", "date": "2026-11-20T04:00:00-05:00",
+                                "impact": "High", "forecast": "", "previous": ""}], time.time() + 10 ** 7   # no download
+    rows = cal_today(int(datetime(2026, 11, 20, 9, 0, tzinfo=MSG_TZ).timestamp()))
+    assert len(rows) == 1 and rows[0]["hm"] == "15:30", rows
+    assert "طلبات إعانة البطالة" in am_cal_txt(rows, ["cal3"]) and am_cal_txt(rows, ["gold"]) == ""
+    _CAL["rows"], _CAL["t"] = None, 0.0
+
+    class FakeTG:
+        channel, dry = "", True
+        def __init__(self): self.out = []
+        def answer(self, *a): pass
+        def edit(self, cid, mid, text, markup=None): self.out.append(("edit", text, markup))
+        def send(self, text, chat=None, reply_to=None, markup=None): self.out.append(("send", text, markup)); return 1
+
+    global STATE_FILE
+    STATE_FILE = os.path.join(HERE, "selftest_state.json")
+    if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
+    ftg = FakeTG()
+    eng = Engine(tg=ftg, bc=FakeBC())
+    sub = eng.sub_of(7, "Abbas")
+    sub["syms"], sub["tfs"] = ["XAUUSD"], ["5m"]
+    cq = lambda data: {"id": "x", "data": data, "message": {"chat": {"id": 7}, "message_id": 1}}
+    for d in ("am", "am:s:NAS100", "am:tf:4h", "am:n:us", "am:on"):
+        eng._callback(cq(d))
+    am = sub["am"]
+    assert am["syms"] == ["XAUUSD", "NAS100"] and am["tf"] == "4h" and "us" in am["news"] and am["on"] == 0 and am["set"] == 1
+    assert not am_wants(sub)
+    eng._callback(cq("am:on"))
+    assert am_wants(sub) and ftg.out[-1][0] == "edit" and "inline_keyboard" in ftg.out[-1][2]
+    assert all(len(b["callback_data"]) <= 64 for r in am_markup(sub)["inline_keyboard"] for b in r)
+    assert any(b["callback_data"] == "am" for r in menu_markup(sub)["inline_keyboard"] for b in r)
+    text = msg_morning(sub, {}, datetime(2026, 11, 20, 9, 0, tzinfo=MSG_TZ), 3, am_cal_txt([], ["cal3"]))
+    assert "صباح الخير" in text and "ما في أخبار" in text
+    print("morning menu OK:", json.dumps(am, ensure_ascii=False))
     if os.path.exists(STATE_FILE): os.remove(STATE_FILE)
 
 
@@ -3376,6 +4258,8 @@ def main():
     ap.add_argument("--minutes", type=float, default=0, help="keep running this many minutes, then save and exit (GitHub Actions)")
     ap.add_argument("--selftest", action="store_true", help="offline logic test")
     ap.add_argument("--simulate", action="store_true", help="offline run: all symbols x all timeframes, simulated prices")
+    ap.add_argument("--morning", action="store_true", help="send the morning (pictures + news) now and stop; "
+                                                             "with --dry-run the pictures are saved in morning_preview/")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if a.selftest:
@@ -3392,7 +4276,7 @@ def main():
     token, chat = clean_token(ENV("TELEGRAM_BOT_TOKEN", "")), clean_chat(ENV("TELEGRAM_CHAT_ID", ""))
     if not a.dry_run and not token:
         sys.exit("Set TELEGRAM_BOT_TOKEN in .env (or use --dry-run). TELEGRAM_CHAT_ID is optional: it is the channel that gets every signal.")
-    run(syms, tfs, Telegram(token, chat, dry=a.dry_run), once=a.once, minutes=a.minutes)
+    run(syms, tfs, Telegram(token, chat, dry=a.dry_run), once=a.once, minutes=a.minutes, morning=a.morning)
 
 if __name__ == "__main__":
     main()
