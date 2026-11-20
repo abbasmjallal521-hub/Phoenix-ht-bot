@@ -11,6 +11,10 @@ Keeps an eye on everything around the Phoenix HT bot and tells the owner on Tele
 * every finished bot run: its log is read and its warnings and errors are counted;
 * every morning a short report: "كل شي تمام", or what is still wrong.
 
+The messages come from the watchdog's own Telegram bot (WATCHDOG_BOT_TOKEN), in its own chat, so they never mix
+with the trades; it can also tell when the signal bot itself stops working. Without that secret they come from the
+signal bot.
+
 It never changes the bot's code, settings or state: it only reads, and starts the bot workflow the same way its own
 schedule does. A problem is sent once, repeated every few hours while it lasts, and followed by a ✅ message when it
 is solved.
@@ -208,6 +212,15 @@ class GitHub:
 class Telegram:
     def __init__(self, token, chat, channel="", dry=False):
         self.token, self.chat, self.channel, self.dry = token, chat, channel, dry
+        self.last_error, self._me = None, None          # (http status, Telegram's text) of the last failed send
+
+    def me(self):
+        """The bot's own account (getMe), kept after the first answer."""
+        if self._me is None:
+            ok, res, _ = self.call("getMe", {})
+            if ok:
+                self._me = res
+        return self._me or {}
 
     def call(self, method, payload):
         """(ok, result or error text, http status). The URL holds the token: it is never logged."""
@@ -244,6 +257,7 @@ class Telegram:
             return False
         ok, res, code = self.call("sendMessage", {"chat_id": self.chat, "text": text, "parse_mode": "HTML",
                                                   "disable_web_page_preview": True})
+        self.last_error = None if ok else (code, str(res)[:200])
         if not ok:
             log.error("Telegram sendMessage failed (%s): %s", code, str(res)[:200])
         return ok
@@ -373,8 +387,10 @@ def scan_log(text):
 
 # ───────────────────────────── the watchdog ─────────────────────────────
 class Watchdog:
-    def __init__(self, gh, tg, quiet=False, dry=False):
-        self.gh, self.tg = gh, tg
+    def __init__(self, gh, tg, quiet=False, dry=False, sig=None):
+        self.gh, self.tg = gh, tg                   # tg: the bot the messages come from
+        self.sig = sig or tg                        # the signal bot: its channel is checked (and setup notes go there)
+        self.own_bot = self.sig is not tg           # the watchdog has its own bot (WATCHDOG_BOT_TOKEN): no mixing
         self.quiet = quiet                          # report run: checks and the report only, no alerts, no restarts
         self.dry = dry                              # print the messages, start nothing
         self.st = self.load()
@@ -417,6 +433,27 @@ class Watchdog:
             return
         self.outbox.append(text)
         del self.outbox[:-20]
+        self.sender_trouble()
+
+    def sender_trouble(self):
+        """The watchdog's own bot could not deliver: say why through the signal bot, at most once a day."""
+        if not self.own_bot or not self.tg.last_error:
+            return
+        code = self.tg.last_error[0]
+        if code == 403:                                     # Start never pressed on the new bot (or it was blocked)
+            name = self.tg.me().get("username")
+            key, text = "start", ("🛡️ <b>المراقب صار إله بوت لحاله</b>\n"
+                                  + (f"فوت عـ @{name} واكبس Start" if name else "فوت عالبوت الجديد تبع المراقب واكبس Start")
+                                  + "، كرمال توصلك التحذيرات هونيك ومش مع الصفقات.")
+        elif code in (401, 404):                            # its token is wrong
+            key, text = "token", ("🛡️ <b>توكن بوت المراقب ما عاد شغال</b>\n"
+                                  "حط توكن جديد من @BotFather بالـsecret اسمه WATCHDOG_BOT_TOKEN.")
+        else:
+            return                                          # network trouble: it is simply sent again later
+        today = local_now().date().isoformat()
+        if self.st.get("hint_" + key) != today:
+            self.st["hint_" + key] = today
+            self.sig.send(text)
 
     def flush(self):
         while self.outbox:
@@ -463,14 +500,19 @@ class Watchdog:
         self.st["due"][key] = time.time() + sec
 
     def hello(self):
-        if self.st.get("hello") or self.quiet:
+        who = "own" if self.own_bot else "signal"           # said again when the messages move to the own bot
+        if self.quiet or self.st.get("hello") == who:
             return
-        self.st["hello"] = True
+        self.st["hello"] = who
+        where = ("📌 هيدا البوت لحاله للتحذيرات بس، فما بتختلط مع الصفقات.\n\n" if self.own_bot else
+                 "💡 هلق عم ببعتلك من بوت الإشارات. إذا بدك التحذيرات بشات لحالها: اعمل بوت جديد من @BotFather، "
+                 "حط التوكن تبعه بـ secret اسمه WATCHDOG_BOT_TOKEN، واكبس Start عالبوت الجديد.\n\n")
         self.say("🛡️ <b>أهلا، أنا المراقب تبع Phoenix</b>\n"
                  "من هلق عيني عالبوت والقناة والأسعار والتطبيق، 24 ساعة.\n\n"
                  "🔴 إذا صار شي بدقلك هون فوراً، وبس ينحل ببعتلك ✅\n"
                  "🔄 إذا البوت وقف برجّعه يشتغل لحالي\n"
                  f"🌅 كل يوم الساعة {MORNING_AT} الصبح ببعتلك تقرير\n\n"
+                 + where +
                  "<i>إذا يوم ما وصلك التقرير الصبحي، يعني أنا كمان واقف: شوف GitHub › Actions › Phoenix Watchdog.</i>")
 
     # ── the bot's runs
@@ -645,21 +687,39 @@ class Watchdog:
     def check_telegram(self):
         self.later("tg", EVERY["tg"])
         tgs = self.st["stats"].setdefault("tg", {})
-        ok, me, code = self.tg.call("getMe", {})
+        if self.own_bot:                                    # can the watchdog's own bot still talk?
+            ok, res, code = self.tg.call("getMe", {})
+            if ok:
+                self.st["tg_dead"] = False
+                self.flush()
+            elif code in (401, 404):
+                self.st["tg_dead"] = True
+                self.tg.last_error = (code, str(res))
+                log.error("TELEGRAM: the watchdog bot token (WATCHDOG_BOT_TOKEN) is refused (%s)", code)
+                self.sender_trouble()
+        ok, me, code = self.sig.call("getMe", {})           # the signal bot
         if not ok:
             if code in (401, 404):
-                tgs.update(ok=False, text="توكن البوت ما عاد شغال")
-                self.st["tg_dead"] = True
-                log.error("TELEGRAM: the bot token is refused (%s): no message can reach you", code)
+                tgs.update(ok=False, text="توكن بوت الإشارات ما عاد شغال")
+                if self.own_bot:                            # its own bot can still tell
+                    self.problem("tg_token", "توكن بوت الإشارات ما عاد شغال",
+                                 "تلغرام رافض التوكن، يعني ولا إشارة عم تطلع (لا عالقناة ولا عالخاص).\n"
+                                 "اعمل توكن جديد من @BotFather (/token) وحطه بالـsecret اسمه TELEGRAM_BOT_TOKEN.",
+                                 ok="بوت الإشارات رجع يشتغل عالتلغرام", confirm=2, check="tg")
+                else:
+                    self.st["tg_dead"] = True
+                log.error("TELEGRAM: the signal bot token is refused (%s)", code)
             else:
                 log.warning("TELEGRAM: getMe failed (%s %s)", code, me)
             return
-        self.st["tg_dead"] = False
-        self.flush()
-        if not self.tg.channel:
+        self.fine("tg_token")
+        if not self.own_bot:
+            self.st["tg_dead"] = False
+            self.flush()
+        if not self.sig.channel:
             tgs.update(ok=None, text="ما في قناة محددة (TELEGRAM_CHAT_ID)")
             return
-        ok, m, code = self.tg.call("getChatMember", {"chat_id": self.tg.channel, "user_id": me["id"]})
+        ok, m, code = self.sig.call("getChatMember", {"chat_id": self.sig.channel, "user_id": me["id"]})
         if not ok:
             why = ("البوت مش لاقي القناة. تأكد من شغلتين:\n"
                    "1. الـsecret اسمه TELEGRAM_CHAT_ID لازم يكون @اسم_القناة (أو رقمها اللي بيبلّش بـ -100 إذا القناة خاصة).\n"
@@ -856,6 +916,9 @@ class Watchdog:
             out.append("⚠️ <b>في شي مش طبيعي فوق، وعم شيّك عليه مرة تانية</b>")
         else:
             out.append("✅ <b>كل شي تمام</b>")
+        if not self.own_bot:
+            out.append("\n💡 <i>هالرسائل عم توصل من بوت الإشارات. لتكون بشات لحالها: بوت جديد من @BotFather "
+                       "وتوكنه بـ secret اسمه WATCHDOG_BOT_TOKEN.</i>")
         return "\n".join(out)
 
 
@@ -867,13 +930,19 @@ def main():
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     chat, source = owner_chat()
-    log.info("messages go to: %s", source or "nobody yet (add the secret WATCHDOG_CHAT_ID)")
-    tg = Telegram(clean_token(ENV("TELEGRAM_BOT_TOKEN")), chat, clean_chat(ENV("TELEGRAM_CHAT_ID")), dry=a.dry_run)
-    wd = Watchdog(GitHub(ENV("GITHUB_TOKEN") or ""), tg, quiet=a.report, dry=a.dry_run)
+    channel = clean_chat(ENV("TELEGRAM_CHAT_ID"))
+    sig = Telegram(clean_token(ENV("TELEGRAM_BOT_TOKEN")), chat, channel, dry=a.dry_run)     # the signal bot
+    own = clean_token(ENV("WATCHDOG_BOT_TOKEN"))                                             # the watchdog's own bot
+    tg = Telegram(own, chat, channel, dry=a.dry_run) if own else sig
+    log.info("messages go to: %s, from %s", source or "nobody yet (add the secret WATCHDOG_CHAT_ID)",
+             "the watchdog's own bot" if own else "the signal bot (no WATCHDOG_BOT_TOKEN yet)")
+    wd = Watchdog(GitHub(ENV("GITHUB_TOKEN") or ""), tg, quiet=a.report, dry=a.dry_run, sig=sig)
 
     if a.report:
         wd.tick(report=True)
         sent = tg.send(wd.report())
+        if not sent:
+            wd.sender_trouble()
         return 0 if sent else 1
 
     t0 = time.time()
@@ -892,7 +961,8 @@ def main():
     if a.minutes and time.time() - t0 >= CHAIN_AFTER:
         write_output("chain", "1")
     if not chat or wd.st.get("tg_dead") or wd.outbox:
-        log.error("messages could not reach you (%d waiting): check TELEGRAM_BOT_TOKEN / WATCHDOG_CHAT_ID", len(wd.outbox))
+        log.error("messages could not reach you (%d waiting): check WATCHDOG_BOT_TOKEN (and Start on that bot), "
+                  "TELEGRAM_BOT_TOKEN or WATCHDOG_CHAT_ID", len(wd.outbox))
         return 1
     return 0
 
