@@ -501,6 +501,8 @@ class Watchdog:
 
     def hello(self):
         who = "own" if self.own_bot else "signal"           # said again when the messages move to the own bot
+        if self.st.get("hello") is True:                    # v1 said hello from the signal bot
+            self.st["hello"] = "signal"
         if self.quiet or self.st.get("hello") == who:
             return
         self.st["hello"] = who
