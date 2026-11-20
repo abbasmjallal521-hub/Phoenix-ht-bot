@@ -1,0 +1,45 @@
+name: Phoenix Analyst
+
+# المحلل: every Saturday morning (Beirut) the week's results and a few ideas, to you on Telegram (the watchdog's bot).
+# It reads the bot's saved state from the Actions cache (read only) and changes nothing.
+# Run it by hand any time: Actions › Phoenix Analyst › Run workflow. A merged change to it also sends a report.
+on:
+  schedule:
+    - cron: "44 7 * * 6"             # Saturday 07:44 UTC = 09:44 Beirut in winter, 10:44 in summer
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["watchdog/phoenix_analyst.py", ".github/workflows/analyst.yml"]
+
+concurrency:
+  group: phoenix-analyst
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests tzdata
+      - name: The bot's saved state (read only)
+        uses: actions/cache/restore@v4
+        with:
+          path: phoenix_state.json
+          key: phoenix-state-analyst-read
+          restore-keys: phoenix-state-
+      - name: Weekly report
+        env:
+          GITHUB_TOKEN: ${{ github.token }}                      # reads the bot's runs (how long it was up)
+          WATCHDOG_BOT_TOKEN: ${{ secrets.WATCHDOG_BOT_TOKEN }}  # sends from the watchdog's own bot
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # else from the signal bot
+          WATCHDOG_CHAT_ID: ${{ secrets.WATCHDOG_CHAT_ID }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+        run: python watchdog/phoenix_analyst.py
