@@ -95,5 +95,17 @@ GitHub › Actions › **Phoenix Watchdog** › Run workflow › علّم على
 بتقدر تلغيه بأي وقت: امحي الـApp Password من نفس الصفحة عند Google، أو امحي الـsecrets.
 بدك إيميلات من جهة تانية تكون دايماً مهمة (متل بنك أو PayPal)؟ حط الدومين تبعها بـ`MAIL_WATCH` بـ`.github/workflows/watchdog.yml`، مفصولين بفاصلة.
 
+## 🎬 صانع المحتوى
+كل يوم الصبح (من الثلاثاء للسبت، حوالي 7:45 بيروت) بيبعتلك من بوت المراقب صور جاهزة للإنستغرام والتيك توك عن صفقات مبارح:
+
+- **كرت اليوم:** المجموع بالدولار، كم ربح وكم خسارة وكم رجعت عالدخول، نسبة الربح، وكل الصفقات. الخسارة كمان بتبين، لأن النتايج بتنحكى متل ما هي.
+- **كرت لكل صفقة من أحسن 3 صفقات رابحة:** الأداة والفريم، BUY أو SELL، الدخول والستوب والأهداف يلي وصلتلها، والنتيجة بالنقاط وبالدولار.
+- **كابشن بالعربي وكابشن بالإنكليزي** مع هاشتاغات، كل واحد برسالة لحالها كرمال تنسخه بسهولة.
+- كل صورة عليها `@phoenix.haz.syndi` وسطر «التداول فيه مخاطرة». بلا وعود ربح.
+- ما بينشر شي لحاله: إنت بتحفظ الصور وبتنزّلهم. ويوم بلا صفقات ما بيبعت شي.
+
+تجربة أو يوم معيّن: Actions › **Phoenix Content** › Run workflow (اكتب التاريخ `YYYY-MM-DD`، أو خليه فاضي لمبارح).
+الحساب المكتوب عالصور بيتغيّر من `CONTENT_HANDLE` بـ`.github/workflows/content.yml`.
+
 ## للمطوّر
-`python watchdog/test_watchdog.py -v` و`python watchdog/test_mail.py -v` و`python watchdog/test_analyst.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
+`python watchdog/test_watchdog.py -v` و`python watchdog/test_mail.py -v` و`python watchdog/test_analyst.py -v` و`python watchdog/test_content.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_content.py --dry-run --out صور/` (بيرسم الصور بلا ما يبعتها)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
