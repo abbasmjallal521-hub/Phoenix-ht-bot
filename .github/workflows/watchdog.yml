@@ -54,8 +54,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           WATCHDOG_BOT_TOKEN: ${{ secrets.WATCHDOG_BOT_TOKEN }}  # the watchdog's own bot: alerts in their own chat
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # the signal bot: its channel is checked
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # the signal bot (its token is checked)
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WATCH_CHANNEL: "0"   # the signal bot sends privately; "1" = also check the channel in TELEGRAM_CHAT_ID
           WATCHDOG_CHAT_ID: ${{ secrets.WATCHDOG_CHAT_ID }}  # optional: your Telegram id (else the bot's owner)
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
           CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}

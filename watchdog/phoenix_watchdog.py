@@ -141,6 +141,12 @@ def clean_chat(c):
     return c if c.startswith("@") else "@" + c
 
 
+def signal_channel():
+    """The channel the watchdog checks: none, unless WATCH_CHANNEL=1. The signal bot sends its trades privately to
+    the subscribers, and the owner's channel is his own, by hand: a TELEGRAM_CHAT_ID left in the secrets is ignored."""
+    return clean_chat(ENV("TELEGRAM_CHAT_ID")) if (ENV("WATCH_CHANNEL") or "0").strip() == "1" else ""
+
+
 def owner_chat():
     """Who gets the messages: WATCHDOG_CHAT_ID, else ADMIN_ID, else the bot's owner from its saved state."""
     for key in ("WATCHDOG_CHAT_ID", "ADMIN_ID"):
@@ -1013,7 +1019,7 @@ def main():
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     chat, source = owner_chat()
-    channel = clean_chat(ENV("TELEGRAM_CHAT_ID"))
+    channel = signal_channel()
     sig = Telegram(clean_token(ENV("TELEGRAM_BOT_TOKEN")), chat, channel, dry=a.dry_run)     # the signal bot
     own = clean_token(ENV("WATCHDOG_BOT_TOKEN"))                                             # the watchdog's own bot
     tg = Telegram(own, chat, channel, dry=a.dry_run) if own else sig
