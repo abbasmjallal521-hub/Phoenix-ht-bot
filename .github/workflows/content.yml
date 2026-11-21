@@ -1,9 +1,11 @@
 name: Phoenix Content
 
-# صانع المحتوى: every morning, yesterday's trades as ready-to-post pictures (Instagram, TikTok) with captions in Arabic
-# and English, to you on Telegram (the watchdog's bot). Nothing is posted anywhere: you share what you want.
-# It reads the bot's saved state from the Actions cache (read only). Any day by hand: Actions › Phoenix Content ›
-# Run workflow (day = YYYY-MM-DD, empty = yesterday). A merged change to it also sends yesterday's pictures.
+# صانع المحتوى: every morning, yesterday's trades as ready-to-post pictures (Instagram, TikTok) and a vertical video
+# with music (TikTok, Reels, Shorts), with captions in Arabic and English, to you on Telegram (the watchdog's bot).
+# On Saturdays also the week's video for the signal bot. Nothing is posted anywhere: you share what you want.
+# It reads the bot's saved state from the Actions cache (read only) and the trades' real candles from Capital.com.
+# Any day by hand: Actions › Phoenix Content › Run workflow (day = YYYY-MM-DD, empty = yesterday; week = the week's
+# video too). A merged change to it also sends yesterday's pictures and video.
 on:
   schedule:
     - cron: "44 5 * * 2-6"           # Tue–Sat 05:44 UTC = 07:44 Beirut in winter (Monday's to Friday's trades)
@@ -13,9 +15,13 @@ on:
         description: "The day to make (YYYY-MM-DD). Empty = yesterday"
         required: false
         default: ""
+      week:
+        description: "Also make the week's video for the signal bot (it comes by itself on Saturdays)"
+        type: boolean
+        default: false
   push:
     branches: [main]
-    paths: ["watchdog/phoenix_content.py", ".github/workflows/content.yml"]
+    paths: ["watchdog/phoenix_content.py", "watchdog/phoenix_video.py", "watchdog/assets/**", ".github/workflows/content.yml"]
 
 concurrency:
   group: phoenix-content
@@ -27,25 +33,32 @@ permissions:
 jobs:
   make:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install requests tzdata
+      - run: pip install requests tzdata numpy playwright imageio-ffmpeg
+      - name: The browser that draws the video frames
+        run: python -m playwright install chromium || echo "no download: the runner's Chrome draws them"
       - name: The bot's saved state (read only)
         uses: actions/cache/restore@v4
         with:
           path: phoenix_state.json
           key: phoenix-state-content-read
           restore-keys: phoenix-state-
-      - name: Make the pictures and send them
+      - name: Make the pictures and the videos and send them
         env:
           WATCHDOG_BOT_TOKEN: ${{ secrets.WATCHDOG_BOT_TOKEN }}  # sends from the watchdog's own bot
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # else from the signal bot
           WATCHDOG_CHAT_ID: ${{ secrets.WATCHDOG_CHAT_ID }}
           ADMIN_ID: ${{ secrets.ADMIN_ID }}
           CONTENT_DAY: ${{ inputs.day }}
+          CONTENT_WEEK: ${{ inputs.week }}
+          CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}        # the trades' real candles (the bot's own prices)
+          CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+          CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+          CAPITAL_ENV: demo
           CONTENT_HANDLE: "@phoenix.haz.syndi"                 # the account written on every picture
         run: python watchdog/phoenix_content.py

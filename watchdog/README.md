@@ -96,7 +96,7 @@ GitHub › Actions › **Phoenix Watchdog** › Run workflow › علّم على
 بدك إيميلات من جهة تانية تكون دايماً مهمة (متل بنك أو PayPal)؟ حط الدومين تبعها بـ`MAIL_WATCH` بـ`.github/workflows/watchdog.yml`، مفصولين بفاصلة.
 
 ## 🎬 صانع المحتوى
-كل يوم الصبح (من الثلاثاء للسبت، حوالي 7:45 بيروت) بيبعتلك من بوت المراقب صور جاهزة للإنستغرام والتيك توك عن صفقات مبارح:
+كل يوم الصبح (من الثلاثاء للسبت، حوالي 7:45 بيروت) بيبعتلك من بوت المراقب صور وفيديو جاهزين للإنستغرام والتيك توك عن صفقات مبارح:
 
 - **كرت اليوم:** المجموع بالدولار، كم ربح وكم خسارة وكم رجعت عالدخول، نسبة الربح، وكل الصفقات. الخسارة كمان بتبين، لأن النتايج بتنحكى متل ما هي.
 - **كرت لكل صفقة من أحسن 3 صفقات رابحة:** الأداة والفريم، BUY أو SELL، الدخول والستوب والأهداف يلي وصلتلها، والنتيجة بالنقاط وبالدولار.
@@ -104,8 +104,14 @@ GitHub › Actions › **Phoenix Watchdog** › Run workflow › علّم على
 - كل صورة عليها `@phoenix.haz.syndi` وسطر «التداول فيه مخاطرة». بلا وعود ربح.
 - ما بينشر شي لحاله: إنت بتحفظ الصور وبتنزّلهم. ويوم بلا صفقات ما بيبعت شي.
 
-تجربة أو يوم معيّن: Actions › **Phoenix Content** › Run workflow (اكتب التاريخ `YYYY-MM-DD`، أو خليه فاضي لمبارح).
+**الفيديوهات** (1080×1920، عمودي للتيك توك والريلز والشورتس، مع موسيقى):
+- **فيديو اليوم (كل يوم):** الشعار، نتيجة اليوم بأرقام بتعدّ، وبعدين أحسن 3 صفقات رابحة **عالشارت الحقيقي** (شموع Capital.com، نفس أسعار البوت): السعر بيطلع والأهداف بتضوي وحدة ورا التانية. بالآخر «تابعنا» وسطر المخاطرة. إذا ما لقى الشموع، بيورجي الصفقة على السلّم (الدخول والستوب والأهداف).
+- **فيديو الأسبوع لبوت الإشارات (كل سبت):** كيف بتوصل الصفقة عالتلفون، أرقام الأسبوع (نسبة الربح وكل أداة)، أحسن صفقة بالأسبوع عالشارت، و«اشترك وخلّي الصفقات توصلك عالتلغرام».
+- **الموسيقى والأصوات معمولين من الصفر بالكود** (مش لحدا تاني)، فبتقدر تنشر بلا مشاكل حقوق. وإذا بدك، حطّ صوت ترند من التطبيق.
+- بيرسم كل فريم بالـChrome على GitHub وبيجمعهن بـffmpeg (بياخد حوالي دقيقتين). إذا صار شي بالفيديو، الصور والكابشن بيوصلوا عادي.
+
+تجربة أو يوم معيّن: Actions › **Phoenix Content** › Run workflow (اكتب التاريخ `YYYY-MM-DD`، أو خليه فاضي لمبارح؛ وعلّم **week** إذا بدك فيديو الأسبوع كمان).
 الحساب المكتوب عالصور بيتغيّر من `CONTENT_HANDLE` بـ`.github/workflows/content.yml`.
 
 ## للمطوّر
-`python watchdog/test_watchdog.py -v` و`python watchdog/test_mail.py -v` و`python watchdog/test_analyst.py -v` و`python watchdog/test_content.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_content.py --dry-run --out صور/` (بيرسم الصور بلا ما يبعتها)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
+`python watchdog/test_watchdog.py -v` و`python watchdog/test_mail.py -v` و`python watchdog/test_analyst.py -v` و`python watchdog/test_content.py -v` و`python watchdog/test_video.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_content.py --dry-run --out صور/` (بيرسم الصور والفيديو بلا ما يبعتهن)، و`python watchdog/phoenix_video.py --sample day --out x/` (فيديو نموذج بأرقام وهمية، مكتوب عليه «نموذج»)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
