@@ -103,7 +103,7 @@ class Running(unittest.TestCase):
         tg = mock.Mock(token="t", chat="1", send=lambda text: sent.append(text) or True)
         with mock.patch.object(C, "load_state", return_value=st), mock.patch.object(C, "find_chrome", return_value=None), \
                 mock.patch.object(C.wd, "Telegram", return_value=tg), mock.patch.object(C.wd, "owner_chat", return_value=("1", "test")):
-            code = C.main(["--day", DAY.isoformat(), *args])
+            code = C.main(["--day", DAY.isoformat(), "--no-video", *args])
         return code, sent
 
     def test_no_chrome_still_sends_the_captions(self):

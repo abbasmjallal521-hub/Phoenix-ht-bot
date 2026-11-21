@@ -3,8 +3,10 @@
 
 Every morning it takes yesterday's closed trades of the signal bot and makes ready-to-post pictures for Instagram and
 TikTok (1080x1350): a card of the whole day (every trade, the losses too) and a card for each of the best winning
-trades (entry, stop, targets, result). It sends them to the owner on Telegram (the watchdog's bot) with a caption in
-Arabic and one in English, ready to copy. Nothing is posted anywhere: the owner shares what he wants.
+trades (entry, stop, targets, result). It also makes a vertical video of the day (1080x1920, with music), and on
+Saturdays a video of the week for the signal bot (phoenix_video.py). It sends them to the owner on Telegram (the
+watchdog's bot) with a caption in Arabic and one in English, ready to copy. Nothing is posted anywhere: the owner
+shares what he wants.
 
 It reads the bot's saved state (phoenix_state.json, restored read-only from the Actions cache) and draws the cards in
 HTML, photographed by the Chrome that GitHub's runner already has. Every card carries a risk line; no profit promises.
@@ -13,6 +15,8 @@ The log holds counts only: the repo is public.
   python watchdog/phoenix_content.py                     # yesterday (Beirut), sent on Telegram
   python watchdog/phoenix_content.py --day 2026-11-20    # that day
   python watchdog/phoenix_content.py --dry-run --out x/  # draw the cards into x/ and print the captions
+  python watchdog/phoenix_content.py --week               # also the week's video (it comes by itself after a Friday)
+  python watchdog/phoenix_content.py --no-video           # pictures only
 """
 import argparse
 import html
@@ -342,11 +346,53 @@ def send_album(tg, pngs, caption):
             f.close()
 
 
+def send_video(tg, path, caption, seconds):
+    import phoenix_video as pv
+    return pv.send_video(tg, path, caption, seconds)
+
+
+VIDEO_NOTE = "جاهز للتيك توك والريلز والشورتس. الموسيقى من عنّا وببلاش، وإذا بدك حطّ صوت ترند من التطبيق."
+
+
+def make_videos(state, day, t, trades, week, out):
+    """The day's video (when the day had trades) and the week's video for the signal bot (Saturdays, or when asked).
+    [(path, seconds, caption, (ar, en) or None)]. A video that can't be made never stops the pictures."""
+    try:
+        import phoenix_video as pv
+    except Exception as ex:                                         # no Playwright / numpy here: pictures only
+        log.warning("videos off: %s", type(ex).__name__)
+        return []
+    vids = []
+    if t["n"]:
+        try:
+            path, sec = pv.day_video(state, day, t, trades, out)
+            vids.append((path, sec, f"🎬 <b>فيديو اليوم · {e(day_ar(day))}</b>\n{VIDEO_NOTE}", None))
+        except Exception as ex:
+            log.warning("day video not made: %s", type(ex).__name__)
+    if week:
+        try:
+            w = pv.week_video(state, day, out)
+            if w:
+                path, sec, wt, mon = w
+                cap = (f"🎬 <b>فيديو الأسبوع لبوت الإشارات · أسبوع {e(pv.week_range(mon))}</b>\n{VIDEO_NOTE}"
+                       + ("\n📉 أسبوع خسارة: انشره بس إذا بدك تبيّن الشفافية." if wt["usd"] < 0 else ""))
+                vids.append((path, sec, cap, pv.week_captions(mon, wt)))
+            else:
+                log.info("week video: no trades this week")
+        except Exception as ex:
+            log.warning("week video not made: %s", type(ex).__name__)
+    return vids
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Phoenix Content: yesterday's trades as ready-to-post pictures")
+    ap = argparse.ArgumentParser(description="Phoenix Content: yesterday's trades as ready-to-post pictures and videos")
     ap.add_argument("--day", default=ENV("CONTENT_DAY") or "", help="YYYY-MM-DD (default: yesterday in Beirut)")
     ap.add_argument("--dry-run", action="store_true", help="draw the cards and print the captions, send nothing")
     ap.add_argument("--out", default="", help="where to keep the pictures (default: a temporary folder)")
+    ap.add_argument("--week", action="store_true", default=(ENV("CONTENT_WEEK") or "").strip().lower() in ("1", "true"),
+                    help="also make the week's video for the signal bot (it comes by itself after a Friday)")
+    ap.add_argument("--no-video", action="store_true", default=(ENV("CONTENT_VIDEO") or "1").strip() == "0",
+                    help="pictures only")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     day = date.fromisoformat(a.day) if a.day.strip() else wd.local_now().date() - timedelta(days=1)
@@ -356,38 +402,51 @@ def main(argv=None):
         return 0
     trades = closed_trades(state, day)
     t = day_tally(state, day, trades)
-    log.info("day %s: %d trades closed", day.isoformat(), t["n"])
-    if not t["n"]:
+    week = a.week or day.weekday() == 4                              # Saturday's run (Friday's trades): the week too
+    log.info("day %s: %d trades closed%s", day.isoformat(), t["n"], ", and the week's video" if week else "")
+    if not t["n"] and not (week and not a.no_video):
         return 0                                                    # a day without trades: nothing to post
     wins = sorted((x for x in trades if x["oc"] == 1), key=lambda x: -x["usd"])[:TOP_TRADES]
     out = a.out or tempfile.mkdtemp(prefix="phoenix-content-")
     os.makedirs(out, exist_ok=True)
     chrome = find_chrome()
     pngs = []
-    if chrome:
+    if t["n"] and chrome:
         try:
             pngs.append(shoot(chrome, day_card(day, t, trades), os.path.join(out, f"{day}-day.png")))
             for i, x in enumerate(wins, 1):
                 pngs.append(shoot(chrome, trade_card(x), os.path.join(out, f"{day}-trade{i}.png")))
         except (subprocess.SubprocessError, OSError, RuntimeError) as ex:
             log.warning("cards not drawn: %s", type(ex).__name__)
-    else:
+    elif t["n"]:
         log.warning("no Chrome found: captions only")
+    vids = [] if a.no_video else make_videos(state, day, t, trades, week, out)
     ar, en = captions(day, t, trades)
-    log.info("made %d pictures", len(pngs))
+    log.info("made %d pictures and %d videos", len(pngs), len(vids))
     if a.dry_run:
-        print("\n".join(pngs), "\n", ar, "\n\n", en, sep="")
+        print("\n".join(pngs + [v[0] for v in vids]), "\n", ar, "\n\n", en, sep="")
         return 0
     chat, source = wd.owner_chat()
     own = wd.clean_token(ENV("WATCHDOG_BOT_TOKEN"))
     tg = wd.Telegram(own or wd.clean_token(ENV("TELEGRAM_BOT_TOKEN")), chat)
     log.info("content goes to: %s, from %s", source or "nobody yet", "the watchdog's own bot" if own else "the signal bot")
-    head = (f"🎬 <b>صانع المحتوى · {e(day_ar(day))}</b>\n"
-            + ("جاهزين للإنستغرام والتيك توك. احفظ الصور، والكابشن تحت 👇" if pngs else "ما قدرت اعمل الصور هالمرة، بس هيدا الكابشن 👇")
-            + ("\n📉 يوم خسارة: انشره بس إذا بدك تبيّن الشفافية." if t["usd"] < 0 else ""))
-    ok = send_album(tg, pngs, head) if pngs else tg.send(head)
-    ok = tg.send(e(ar)) and ok
-    ok = tg.send(e(en)) and ok
+    ok = True
+    if t["n"]:
+        head = (f"🎬 <b>صانع المحتوى · {e(day_ar(day))}</b>\n"
+                + ("جاهزين للإنستغرام والتيك توك. احفظ الصور، والكابشن تحت 👇" if pngs else "ما قدرت اعمل الصور هالمرة، بس هيدا الكابشن 👇")
+                + ("\n📉 يوم خسارة: انشره بس إذا بدك تبيّن الشفافية." if t["usd"] < 0 else ""))
+        ok = send_album(tg, pngs, head) if pngs else tg.send(head)
+    for path, sec, cap, caps in vids:
+        if caps is None:                                            # the day's video comes before the day's captions
+            ok = send_video(tg, path, cap, sec) and ok
+    if t["n"]:
+        ok = tg.send(e(ar)) and ok
+        ok = tg.send(e(en)) and ok
+    for path, sec, cap, caps in vids:                               # the week's video, with its own captions
+        if caps is not None:
+            ok = send_video(tg, path, cap, sec) and ok
+            ok = tg.send(e(caps[0])) and ok
+            ok = tg.send(e(caps[1])) and ok
     return 0 if ok else 1
 
 
