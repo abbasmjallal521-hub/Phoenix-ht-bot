@@ -64,6 +64,9 @@ jobs:
           CAPITAL_ENV: live      # the bot's logs show its key logs in on the live account (demo is tried second)
           APP_URL: ${{ secrets.APP_URL }}                    # optional: the app's link (kept secret: this repo is public)
           LINK_URL: ${{ secrets.LINK_URL }}                  # optional: the link page
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}        # optional: مدير الإيميلات (your Gmail address)
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}  # a Google app password (never your real password)
+          MAIL_WATCH: ""         # optional: more domains whose every email is serious, comma separated
         run: python watchdog/phoenix_watchdog.py ${{ inputs.report_now == true && '--report' || '--minutes 340' }}
       - name: Save watchdog memory
         if: always() && inputs.report_now != true

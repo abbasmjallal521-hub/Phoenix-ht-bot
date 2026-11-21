@@ -9,6 +9,7 @@
 | 💹 الأسعار (Capital.com) | كل ساعة | إذا Capital.com رفض الدخول، أو الأسعار وقفت والسوق مفتوح |
 | 📱 التطبيق و🔗 صفحة الروابط | كل ساعة | إذا ما فتحوا، وإذا Render موقّف الخدمة |
 | 🧾 كل تشغيلة للبوت بتخلص | لما تخلص | بيقرأ الـlog وبيعدّ الأخطاء، وبيبعتلك إذا في شي خطير |
+| 📧 الـGmail تبعك (مدير الإيميلات) | كل 10 دقايق | الإيميلات المهمة بتوصلك فوراً، والباقي بيعدّه بتقرير الصبح. شوف «مدير الإيميلات» تحت |
 | 🌅 تقرير الصبح | كل يوم 8:50 (بيروت) | «كل شي تمام ✅» أو شو لسا مش مزبوط |
 
 - كل مشكلة بتوصلك **مرة وحدة**، وإذا طوّلت بتوصلك تذكرة كل 4 ساعات، وبس تنحل بيوصلك ✅.
@@ -74,5 +75,25 @@ GitHub › Actions › **Phoenix Watchdog** › Run workflow › علّم على
 - بيقرا ذاكرة البوت بس (قراءة)، وما بيكتب بالـlog لا صفقات ولا أرقام، لأن الريبو public.
 - بتقدر تغيّر الأهداف من `.github/workflows/analyst.yml` (بالـenv): `GOAL_WINRATE` و`GOAL_TRADES`.
 
+## 📧 مدير الإيميلات
+بيشتغل جوّا المراقب، وبيبعتلك من نفس بوته. كل 10 دقايق بيشيّك عالـGmail:
+
+- **بيدقّلك فوراً** عالإيميلات المهمة: تنبيهات أمان Google، تنبيهات GitHub وتسجيلات الدخول (وتشغيلات فاشلة بالريبوهات التانية؛ تبع البوت المراقب أصلاً عم يشوفها)، Render إذا فشل deploy أو وقفت خدمة، Firebase وGoogle Cloud، وCapital.com وOneRoyal (مارجن، سحب وإيداع، أمان الحساب). وأي إيميل فيه كلمات أمان متل «Security alert» أو «تنبيه أمان».
+- **بيتأكّد إنه المرسل حقيقي** من فحص Gmail نفسه (DMARC/DKIM). إذا مش متأكد، بيحطلك ⚠️: ما تكبس أي رابط قبل ما تتأكد.
+- **الباقي** بيعدّلك ياه بتقرير الصبح: كم إيميل ومن مين.
+- بيقرا **المرسل والموضوع بس**. ما بيفتح الإيميل، وما بيعلّمه مقروء، وما بيمحي ولا بينقل شي. وما بيكتب بالـlog ولا مرسل ولا موضوع، لأن الريبو public.
+
+### التشغيل (5 دقايق)
+1. لازم يكون حساب Google عليه **2-Step Verification** (myaccount.google.com › Security).
+2. فوت على **myaccount.google.com/apppasswords** › اكتب اسم: `Phoenix` › Create.
+3. Google بيعطيك كلمة سر من 16 حرف. **هيدي مش كلمة سرّك الأصلية**، وما تبعتها لحدا ولا بأي شات.
+4. GitHub › Phoenix-ht-bot › Settings › Secrets and variables › Actions › **New repository secret**، مرتين:
+   - Name: `GMAIL_ADDRESS` › الإيميل تبعك (…@gmail.com).
+   - Name: `GMAIL_APP_PASSWORD` › الـ16 حرف (عادي إذا فيهن فراغات).
+5. رجّع شغّل المراقب ليقرا الـsecrets (شوف «زدت أو غيّرت secret؟» فوق). بيوصلك «📧 مدير الإيميلات صار شغّال».
+
+بتقدر تلغيه بأي وقت: امحي الـApp Password من نفس الصفحة عند Google، أو امحي الـsecrets.
+بدك إيميلات من جهة تانية تكون دايماً مهمة (متل بنك أو PayPal)؟ حط الدومين تبعها بـ`MAIL_WATCH` بـ`.github/workflows/watchdog.yml`، مفصولين بفاصلة.
+
 ## للمطوّر
-`python watchdog/test_watchdog.py -v` و`python watchdog/test_analyst.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
+`python watchdog/test_watchdog.py -v` و`python watchdog/test_mail.py -v` و`python watchdog/test_analyst.py -v` (تجارب بلا إنترنت)، و`python watchdog/phoenix_watchdog.py --report --dry-run` و`python watchdog/phoenix_analyst.py --dry-run` (بيطبعوا التقرير بدل ما يبعتوه).
