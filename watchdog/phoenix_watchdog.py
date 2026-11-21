@@ -9,6 +9,8 @@ Keeps an eye on everything around the Phoenix HT bot and tells the owner on Tele
 * the prices: does Capital.com still let the bot in, and does gold move while the market is open?
 * the app and the link page (optional, from the APP_URL / LINK_URL secrets): do they open?
 * every finished bot run: its log is read and its warnings and errors are counted;
+* the owner's Gmail (optional, from GMAIL_ADDRESS / GMAIL_APP_PASSWORD): serious emails are sent at once, the rest
+  are counted for the morning report (phoenix_mail.py: headers only, nothing marked as read);
 * every morning a short report: "كل شي تمام", or what is still wrong.
 
 The messages come from the watchdog's own Telegram bot (WATCHDOG_BOT_TOKEN), in its own chat, so they never mix
@@ -24,6 +26,7 @@ log here.
 """
 import argparse
 import html
+import imaplib
 import json
 import logging
 import os
@@ -35,6 +38,9 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from phoenix_mail import LoginError, MailWatch  # noqa: E402  the Gmail check (مدير الإيميلات)
 
 log = logging.getLogger("watchdog")
 ENV = os.environ.get
@@ -53,7 +59,8 @@ NOTIFY_RESTARTS = (ENV("NOTIFY_RESTARTS") or "0") == "1"   # 1 = a message for e
 UA = {"User-Agent": "PhoenixWatchdog/1.0"}
 
 TICK = 300                      # one round every 5 minutes: the bot's runs are read every round
-EVERY = {"workflow": 1800, "tg": 3600, "capital": 3600, "app": 3600, "link": 3600, "keepalive": 7 * 86400}
+EVERY = {"workflow": 1800, "tg": 3600, "capital": 3600, "app": 3600, "link": 3600, "mail": 600,
+         "keepalive": 7 * 86400}
 RECHECK = 300                   # a check that failed once runs again after 5 minutes, before any message
 OPEN_RECHECK = 900              # while a problem lasts, its check runs every 15 minutes (to see it solved)
 REMIND = 4 * 3600               # a problem that lasts is sent again every 4 hours
@@ -399,6 +406,8 @@ class Watchdog:
         self.probe_capital, self.probe_web = capital_probe, web_probe
         self.app_url = (ENV("APP_URL") or "").strip()
         self.link_url = (ENV("LINK_URL") or "").strip()
+        self.mail = MailWatch(ENV("GMAIL_ADDRESS"), ENV("GMAIL_APP_PASSWORD"), self.st["mail"], repo=REPO,
+                              extra=ENV("MAIL_WATCH"))
 
     # ── memory (kept between runs in the Actions cache)
     @staticmethod
@@ -410,7 +419,7 @@ class Watchdog:
         except (OSError, ValueError):
             pass
         for k, v in (("issues", {}), ("fails", {}), ("due", {}), ("restarts", []), ("crashes", []), ("seen", []),
-                     ("stats", {}), ("outbox", [])):
+                     ("stats", {}), ("outbox", []), ("mail", {})):
             st.setdefault(k, v)
         return st
 
@@ -782,6 +791,70 @@ class Watchdog:
             why += "\nRender موقّف الخدمة: يمكن خلصت الساعات المجانية لهالشهر، أو انوقفت من الحساب."
         self.problem(key, f"{name} مش عم يفتح", why, ok=ok, confirm=2)
 
+    # ── the owner's Gmail (مدير الإيميلات)
+    def check_mail(self):
+        self.later("mail", EVERY["mail"])
+        try:
+            found, came, first = self.mail.check()
+        except LoginError:
+            self.problem("mail_login", "ما قدرت فوت عالـGmail",
+                         "الـApp Password غلط أو انلغى. اعمل واحد جديد من myaccount.google.com/apppasswords "
+                         "وحطه بالـsecret اسمه GMAIL_APP_PASSWORD.", ok="رجعت فوت عالـGmail", confirm=2, level="⚠️",
+                         check="mail")
+            return
+        except (OSError, imaplib.IMAP4.error, AttributeError, ValueError) as e:    # Gmail did not answer well
+            log.warning("mail check: %s", type(e).__name__)
+            self.problem("mail", "ما عم قدر شيّك عالإيميلات", "Gmail مش عم يرد. عم جرّب كل 10 دقايق.",
+                         ok="رجعت شيّك عالإيميلات", confirm=6, level="⚠️")
+            return
+        self.fine("mail_login")
+        self.fine("mail")
+        if first and not self.st["mail"].get("hello"):
+            self.st["mail"]["hello"] = True
+            self.say("📧 <b>مدير الإيميلات صار شغّال</b>\n"
+                     "كل 10 دقايق بشيّك عالـGmail تبعك:\n"
+                     "🔴 الإيميلات المهمة (أمان Google وGitHub، Render، Firebase، Capital.com، OneRoyal) بتوصلك هون فوراً\n"
+                     "📬 والباقي بعدّلك ياه بتقرير الصبح\n\n"
+                     "<i>بقرا المرسل والموضوع بس، وما بعلّم ولا إيميل مقروء.</i>")
+        if found:
+            self.say(self.mail_alert(found))
+        log.info("mail: %d new, %d serious", came, len(found))      # counts only: senders and subjects stay private
+
+    @staticmethod
+    def mail_alert(found):
+        warn = "⚠️ <i>ما تأكّدت إنه المرسل حقيقي: ما تكبس أي رابط بالإيميل قبل ما تتأكد.</i>"
+        subject = lambda f: esc(f.get("subject") or "(بلا موضوع)")
+        if len(found) == 1:
+            f = found[0]
+            out = ["📧 <b>إيميل مهم</b>", f"<b>{esc(f['label'])}</b> · {esc(f['addr'])}", subject(f)]
+            if f.get("when"):
+                out.append(f"🕐 {clock(f['when'])}")
+            if not f["real"]:
+                out.append(warn)
+            return "\n".join(out)
+        out = [f"📧 <b>{count_ar(len(found), 'إيميل مهم', 'إيميلين مهمّين', 'إيميلات مهمة', 'إيميل مهم')}</b>", ""]
+        out += [f"{i}. {'' if f['real'] else '⚠️ '}<b>{esc(f['label'])}</b>: {subject(f)}" for i, f in enumerate(found[:8], 1)]
+        if len(found) > 8:
+            out.append(f"… و{len(found) - 8} غيرهن بالـGmail")
+        if any(not f["real"] for f in found):
+            out += ["", warn]
+        return "\n".join(out)
+
+    def mail_line(self):
+        if not self.mail.on:
+            return "📬 الإيميلات: ⚪ مش مربوطة (زيد GMAIL_ADDRESS وGMAIL_APP_PASSWORD)"
+        mem = self.st["mail"]
+        if "next" not in mem:
+            return "📬 الإيميلات: ⚪ لسا ما فتت عالـGmail"
+        dg = mem.get("digest") or {}
+        if not dg.get("n"):
+            return "📬 الإيميلات: ما وصل شي من آخر تقرير"
+        top = sorted(dg.get("by", {}).items(), key=lambda kv: -kv[1])
+        rest = sum(v for _, v in top[4:])
+        return (f"📬 الإيميلات من آخر تقرير: {dg['n']}"
+                + (f" · {dg['serious']} مهم وصلك هون" if dg.get("serious") else "")
+                + "\n   " + "، ".join(f"{esc(k)} {v}" for k, v in top[:4]) + (f"، وغيرهن {rest}" if rest else ""))
+
     # ── one round, the report
     def tick(self, report=False):
         if self.outbox and not self.quiet:                  # messages Telegram did not take before
@@ -808,6 +881,8 @@ class Watchdog:
         if self.link_url:
             checks.append(("link", lambda: self.check_web("link", self.link_url, "صفحة الروابط",
                                                           "صفحة الروابط رجعت تفتح")))
+        if self.mail.on:
+            checks.append(("mail", self.check_mail))
         for key, fn in checks:
             if report or self.due(key):
                 try:
@@ -827,6 +902,7 @@ class Watchdog:
             return
         self.st["morning"] = now.date().isoformat()
         self.say(self.report())
+        self.st["mail"]["digest"] = {"n": 0, "serious": 0, "by": {}}      # the emails are counted from this report on
 
     def uptime(self, hours=24):
         """Share of the last `hours` with a bot run going (from the runs' own start and end times)."""
@@ -902,6 +978,7 @@ class Watchdog:
             sec = round(w.get("sec") or 0)
             took = count_ar(sec, "ثانية", "ثانيتين", "ثواني", "ثانية") if sec >= 1 else "أقل من ثانية"
             out.append(f"{label}: " + (f"✅ شغال (فتح بـ{took})" if w.get("ok") else "🔴 مش عم يفتح"))
+        out.append(self.mail_line())
         lr = self.st.get("last_run")
         if lr:
             line = f"🧾 آخر تشغيلة للبوت: {lr.get('err', 0)} خطأ · {lr.get('warn', 0)} تحذير"
