@@ -483,5 +483,16 @@ class OwnBot(Case):
         self.assertIn("لحاله للتحذيرات", "\n".join(self.own.sent))
 
 
+class ChannelIgnored(unittest.TestCase):
+    def test_a_channel_secret_is_ignored_unless_asked(self):
+        from unittest import mock
+        with mock.patch.dict(pw.os.environ, {"TELEGRAM_CHAT_ID": "@phoenixhttrading"}, clear=False):
+            pw.os.environ.pop("WATCH_CHANNEL", None)
+            self.assertEqual(pw.signal_channel(), "")                    # private signals: no channel alerts
+            pw.os.environ["WATCH_CHANNEL"] = "1"
+            self.assertEqual(pw.signal_channel(), "@phoenixhttrading")
+            pw.os.environ.pop("WATCH_CHANNEL", None)
+
+
 if __name__ == "__main__":
     unittest.main()
